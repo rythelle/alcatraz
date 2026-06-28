@@ -206,8 +206,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── 2. Global shortcuts ──
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Global quit on dashboard
-		if a.Screen == ScreenDashboard && (msg.String() == "q" || msg.String() == "ctrl+c") {
+		// Global quit
+		if msg.String() == "q" || msg.String() == "ctrl+c" {
 			return a, tea.Quit
 		}
 		// Global back

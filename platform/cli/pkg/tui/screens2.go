@@ -367,7 +367,7 @@ func (a *App) doClean() tea.Cmd {
 
 func (a *App) handleOutputKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q":
+	case "esc":
 		a.Screen = ScreenDashboard
 		a.Loading = false
 		return true, nil
