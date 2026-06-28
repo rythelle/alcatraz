@@ -323,11 +323,17 @@ func shellCmd() *cobra.Command {
 			}
 
 			envArgs := config.CollectAPIEnvArgs()
-			c := compose.ExecInteractive("alcatraz", envArgs...)
+			c := compose.ExecInteractive("alcatraz", "/workspace", envArgs...)
 			c.Stdin = os.Stdin
 			c.Stdout = os.Stdout
 			c.Stderr = os.Stderr
-			return c.Run()
+			if err := c.Run(); err != nil {
+				if _, ok := err.(*exec.ExitError); ok {
+					return nil // shell exited normally (exit, Ctrl+D, Ctrl+C)
+				}
+				return err
+			}
+			return nil
 		},
 	}
 }

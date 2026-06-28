@@ -110,9 +110,12 @@ func (c *Compose) Exec(service string, cmd string, envArgs ...string) *exec.Cmd 
 	return c.exec(args...)
 }
 
-// ExecInteractive opens an interactive shell.
-func (c *Compose) ExecInteractive(service string, envArgs ...string) *exec.Cmd {
+// ExecInteractive opens an interactive shell, optionally starting in workdir.
+func (c *Compose) ExecInteractive(service string, workdir string, envArgs ...string) *exec.Cmd {
 	args := append(c.Flags(), "exec")
+	if workdir != "" {
+		args = append(args, "--workdir", workdir)
+	}
 	for _, e := range envArgs {
 		args = append(args, "-e", e)
 	}
