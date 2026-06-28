@@ -55,8 +55,8 @@ services:
         NODE_VERSION: ${NODE_VERSION:-22.19}
 
     volumes:
+      - alcatraz-home:/home/alcatraz_runner
       - alcatraz-claude-data:/home/alcatraz_runner/.claude
-      # - ~/.claude.json:/home/alcatraz_runner/.claude.json:rw  # REMOVED - causes host/container trust conflict
       - ~/.claude/skills:/home/alcatraz_runner/.claude/skills:rw
       - alcatraz-gemini-data:/home/alcatraz_runner/.gemini
       - ${AI_CONTEXT_PATH:-./.ai-context}:/home/alcatraz_runner/.ai-context:rw
@@ -180,6 +180,8 @@ networks:
           gateway: 172.30.0.1
 
 volumes:
+  alcatraz-home:
+    driver: local
   alcatraz-claude-data:
     driver: local
   alcatraz-opencode-config:
