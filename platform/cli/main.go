@@ -113,7 +113,7 @@ func runCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
-				path = args[0]
+				path = workspace.NormalizePath(args[0])
 			}
 
 			// Resolve
@@ -186,7 +186,7 @@ func saveCmd() *cobra.Command {
 			name := args[0]
 			path := ""
 			if len(args) > 1 {
-				path = args[1]
+				path = workspace.NormalizePath(args[1])
 			} else {
 				path = state.GetWorkspace()
 			}
@@ -298,7 +298,7 @@ func shellCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
-				path = args[0]
+				path = workspace.NormalizePath(args[0])
 				if resolved, ok := wsMgr.Resolve(path); ok {
 					path = resolved
 				}

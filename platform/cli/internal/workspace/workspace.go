@@ -75,6 +75,32 @@ func (m *Manager) Remove(name string) error {
 	return m.writeAll(workspaces)
 }
 
+// NormalizePath converts Windows UNC WSL paths to Linux paths and fixes
+// paths missing the leading slash (e.g. "home/user/..." → "/home/user/...").
+func NormalizePath(p string) string {
+	p = strings.ReplaceAll(p, "\\", "/")
+
+	lower := strings.ToLower(p)
+	for _, prefix := range []string{"//wsl.localhost/", "//wsl$/"} {
+		if strings.HasPrefix(lower, prefix) {
+			rest := p[len(prefix):]
+			if idx := strings.Index(rest, "/"); idx != -1 {
+				return rest[idx:]
+			}
+		}
+	}
+
+	if !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, ".") && !strings.HasPrefix(p, "~") {
+		for _, root := range []string{"home/", "root/", "usr/", "var/", "opt/", "mnt/", "srv/"} {
+			if strings.HasPrefix(lower, root) {
+				return "/" + p
+			}
+		}
+	}
+
+	return p
+}
+
 // Resolve returns the path for an alias, or the input if not found.
 func (m *Manager) Resolve(alias string) (string, bool) {
 	workspaces, err := m.Load()
