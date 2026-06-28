@@ -1,0 +1,203 @@
+name: alcatraz
+
+services:
+  # Squid proxy - whitelist of allowed domains
+  proxy-whitelist:
+    container_name: alcatraz-proxy
+    image: ubuntu/squid:latest
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+    networks:
+      - isolated-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "squid"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Alcatraz Backend (Go) - MITM proxy + Data Guardian sanitizer
+  alcatraz-backend:
+    container_name: alcatraz-backend
+    image: alcatraz-backend:latest
+    build:
+      context: ./platform/backend
+      dockerfile: Dockerfile
+    networks:
+      - isolated-network
+    depends_on:
+      proxy-whitelist:
+        condition: service_healthy
+    volumes:
+      - alcatraz-ca-certs:/shared-certs
+      - alcatraz-audit:/var/log/alcatraz
+    environment:
+      - PROXY_PORT=8080
+      - LOG_LEVEL=info
+      - AUDIT_LOG_PATH=/var/log/alcatraz/audit.log
+      - DRY_RUN=false
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # Isolated container with the AI CLIs (Claude, Gemini, etc.)
+  alcatraz:
+    container_name: alcatraz
+    image: alcatraz:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.alcatraz
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22.19}
+
+    volumes:
+      - ${ALCATRAZ_WORKSPACE:-./project}:/workspace:rw
+      - alcatraz-claude-data:/home/alcatraz_runner/.claude
+      # - ~/.claude.json:/home/alcatraz_runner/.claude.json:rw  # REMOVED - causes host/container trust conflict
+      - ~/.claude/skills:/home/alcatraz_runner/.claude/skills:rw
+      - alcatraz-gemini-data:/home/alcatraz_runner/.gemini
+      - ${AI_CONTEXT_PATH:-./.ai-context}:/home/alcatraz_runner/.ai-context:rw
+      # Mega Brain - command (+ brain alias) and unified hook init
+      - ./mega-brain/mega-brain.sh:/home/alcatraz_runner/.local/bin/mega-brain:ro
+      - ./mega-brain/mega-brain.sh:/home/alcatraz_runner/.local/bin/brain:ro
+      - ./docker-init/mega-brain-init.sh:/home/alcatraz_runner/.local/bin/mega-brain-init:ro
+      # Mega Brain - SessionStart/SessionEnd hook adapters
+      - ./mega-brain/hooks/start-claude-codex.sh:/home/alcatraz_runner/.local/bin/mb-hook-start-cc:ro
+      - ./mega-brain/hooks/start-gemini.sh:/home/alcatraz_runner/.local/bin/mb-hook-start-gemini:ro
+      - ./mega-brain/hooks/session-end.sh:/home/alcatraz_runner/.local/bin/mb-hook-end:ro
+      # Mega Brain - per-model instruction files
+      - ./mega-brain/claude:/home/alcatraz_runner/.claude/skills/mega-brain:ro
+      - ./mega-brain/gemini/GEMINI.md:/home/alcatraz_runner/.gemini/GEMINI.md:ro
+      - alcatraz-codex-config:/home/alcatraz_runner/.codex
+      - ./mega-brain/codex/AGENTS.md:/home/alcatraz_runner/.codex/AGENTS.md:ro
+      - alcatraz-opencode-config:/home/alcatraz_runner/.config/opencode
+      - ./mega-brain/opencode/AGENTS.md:/home/alcatraz_runner/.config/opencode/AGENTS.md:ro
+      - ./mega-brain/opencode/plugin.js:/home/alcatraz_runner/.config/opencode/plugin/mega-brain.js:ro
+      - alcatraz-opencode-state:/home/alcatraz_runner/.local/state
+      # Go backend CA for MITM trust
+      - alcatraz-ca-certs:/shared-certs:ro
+      - alcatraz-pnpm-store:/home/alcatraz_runner/.local/share
+      - alcatraz-node-cache:/home/alcatraz_runner/.npm-global
+      - alcatraz-pip-cache:/home/alcatraz_runner/.cache/pip
+      - alcatraz-workspace-cache:/workspace/.cache
+
+    networks:
+      - isolated-network
+    depends_on:
+      proxy-whitelist:
+        condition: service_healthy
+      alcatraz-backend:
+        condition: service_healthy
+
+    ports:
+      - "3000:3000"
+      - "3100:3100"
+      - "1455:1455"
+
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 1.5
+    pids_limit: 1024
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+      nproc:
+        soft: 1024
+        hard: 1024
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - KILL
+
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=1G,mode=1777,exec
+      - /run:size=256M,noexec,mode=1777
+      - /home/alcatraz_runner/.config:size=256M,mode=1777
+      - /home/alcatraz_runner/.cache:size=512M,mode=1777
+      - /var/tmp:size=256M,noexec,mode=1777
+      - /home/alcatraz_runner/.opencode:size=256M,mode=0755,uid=1000,gid=1000
+
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./seccomp-profile.json
+
+    environment:
+      - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=1024
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PATH=/home/alcatraz_runner/.opencode/bin:/home/alcatraz_runner/.nvm/versions/node/v22.19.0/bin:/home/alcatraz_runner/.npm-global/bin:/home/alcatraz_runner/.local/bin:/home/alcatraz_runner/.claude/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - TERM=xterm-256color
+      - COLORTERM=truecolor
+      # Traffic goes through the Go MITM backend before Squid
+      - http_proxy=http://alcatraz-backend:8080
+      - https_proxy=http://alcatraz-backend:8080
+      - HTTP_PROXY=http://alcatraz-backend:8080
+      - HTTPS_PROXY=http://alcatraz-backend:8080
+      - no_proxy=localhost,127.0.0.1,proxy-whitelist,alcatraz-backend
+      - NO_PROXY=localhost,127.0.0.1,proxy-whitelist,alcatraz-backend
+      # Go backend CA
+      - SSL_CERT_FILE=/shared-certs/ca-cert.pem
+      - REQUESTS_CA_BUNDLE=/shared-certs/ca-cert.pem
+      - NODE_EXTRA_CA_CERTS=/shared-certs/ca-cert.pem
+      - CURL_CA_BUNDLE=/shared-certs/ca-cert.pem
+      - GIT_SSL_CAINFO=/shared-certs/ca-cert.pem
+      - PIP_USER=true
+      - NPM_CONFIG_CACHE=/tmp/.npm
+      - CLAUDE_CODE_DISABLE_TELEMETRY=true
+      - NODE_VERSION=${NODE_VERSION:-22.19}
+      # Mega Brain optional prefix grouping (set both to enable)
+      - MEGABRAIN_GROUP_PREFIX=${MEGABRAIN_GROUP_PREFIX:-}
+      - MEGABRAIN_GROUP_DIR=${MEGABRAIN_GROUP_DIR:-}
+
+    stdin_open: true
+    tty: true
+    entrypoint: /bin/bash
+    command: -c "mega-brain-init 2>/dev/null || true; source /workspace/.alcatraz/init.sh 2>/dev/null || true; mega-brain context 2>/dev/null || true; exec bash"
+    restart: "no"
+
+networks:
+  isolated-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
+
+volumes:
+  alcatraz-claude-data:
+    driver: local
+  alcatraz-opencode-config:
+    driver: local
+  alcatraz-opencode-state:
+    driver: local
+  alcatraz-pnpm-store:
+    driver: local
+  alcatraz-node-cache:
+    driver: local
+  alcatraz-pip-cache:
+    driver: local
+  alcatraz-workspace-cache:
+    driver: local
+  alcatraz-ca-certs:
+    driver: local
+  alcatraz-audit:
+    driver: local
+  alcatraz-codex-config:
+    driver: local
+  alcatraz-gemini-data:
+    driver: local

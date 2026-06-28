@@ -1,0 +1,208 @@
+{
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    {
+      "architecture": "SCMP_ARCH_X86_64",
+      "subArchitectures": [
+        "SCMP_ARCH_X86",
+        "SCMP_ARCH_X32"
+      ]
+    },
+    {
+      "architecture": "SCMP_ARCH_AARCH64",
+      "subArchitectures": [
+        "SCMP_ARCH_ARM"
+      ]
+    }
+  ],
+  "syscalls": [
+    {
+      "name": "socket",
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "value": 1,
+          "valueTwo": 0,
+          "op": "SCMP_CMP_EQ",
+          "excludeAction": "SCMP_ACT_ERRNO",
+          "excludeErrno": 1
+        }
+      ]
+    },
+    {
+      "name": "socket",
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "value": 10,
+          "op": "SCMP_CMP_EQ"
+        }
+      ]
+    }
+  ],
+  "syscallLists": [
+    {
+      "names": [
+        "execve",
+        "execveat",
+        "fork",
+        "vfork",
+        "clone",
+        "clone3",
+        "ptrace",
+        "process_vm_readv",
+        "process_vm_writev",
+        "mount",
+        "umount2",
+        "reboot",
+        "swapon",
+        "swapoff",
+        "init_module",
+        "delete_module",
+        "lookup_dcookie",
+        "perf_event_open",
+        "open_by_handle_at",
+        "name_to_handle_at",
+        "bpf",
+        "io_uring_setup",
+        "kexec_load",
+        "kexec_file_load",
+        "userfaultfd",
+        "vmsplice"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "comment": "Blocks dangerous module-loading syscalls and exploits"
+    },
+    {
+      "names": [
+        "chroot",
+        "pivot_root",
+        "chdir",
+        "umask"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Permite file operations normais"
+    },
+    {
+      "names": [
+        "iptables",
+        "ip6tables",
+        "nftables"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "comment": "Blocks firewall/network modifications"
+    },
+    {
+      "names": [
+        "read",
+        "write",
+        "open",
+        "openat",
+        "openat2",
+        "close",
+        "stat",
+        "fstat",
+        "lstat",
+        "poll",
+        "lseek",
+        "mmap",
+        "mprotect",
+        "brk",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "rt_sigpending",
+        "rt_sigtimedwait",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "sigaltstack",
+        "ioctl",
+        "pread64",
+        "pwrite64",
+        "readv",
+        "writev",
+        "access",
+        "pipe",
+        "select",
+        "sched_yield",
+        "mremap",
+        "msync",
+        "mincore",
+        "madvise",
+        "shmget",
+        "shmat",
+        "shmctl",
+        "dup",
+        "dup2",
+        "dup3",
+        "pause",
+        "nanosleep",
+        "getitimer",
+        "alarm",
+        "setitimer",
+        "getpid",
+        "sendfile",
+        "socket",
+        "connect",
+        "accept",
+        "sendto",
+        "recvfrom",
+        "sendmsg",
+        "recvmsg",
+        "shutdown",
+        "bind",
+        "listen",
+        "getsockname",
+        "getpeername",
+        "socketpair",
+        "setsockopt",
+        "getsockopt",
+        "clone",
+        "fork",
+        "vfork",
+        "execve",
+        "exit",
+        "wait4",
+        "kill",
+        "uname",
+        "fcntl",
+        "flock",
+        "fsync",
+        "fdatasync",
+        "truncate",
+        "ftruncate",
+        "getdents",
+        "getcwd",
+        "chdir",
+        "fchdir",
+        "rename",
+        "mkdir",
+        "rmdir",
+        "creat",
+        "link",
+        "unlink",
+        "symlink",
+        "readlink",
+        "chmod",
+        "fchmod",
+        "chown",
+        "fchown",
+        "lchown",
+        "umask",
+        "gettimeofday",
+        "getrlimit",
+        "getrusage",
+        "gettid",
+        "syslog",
+        "prctl",
+        "arch_prctl"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Syscalls allowed for basic operations"
+    }
+  ]
+}

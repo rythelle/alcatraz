@@ -1,0 +1,10 @@
+.git
+platform/backend/alcatraz
+platform/backend/healthcheck
+project
+.specs
+.gitignore
+.env
+.alcatraz-state
+docker-compose.override.yml
+*.md

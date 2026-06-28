@@ -1,0 +1,45 @@
+#!/bin/bash
+# Alcatraz CLI wrapper
+# Builds the Go CLI if needed, delegates all commands to it,
+# and handles post-TUI actions (like auto-opening a shell).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLI_DIR="$SCRIPT_DIR/platform/cli"
+CLI_BIN="$CLI_DIR/alcatraz-cli"
+
+# Build if missing or source is newer
+if [ ! -f "$CLI_BIN" ] || [ "$CLI_DIR/main.go" -nt "$CLI_BIN" ]; then
+    echo "Building Alcatraz CLI..."
+    (cd "$CLI_DIR" && go build -o alcatraz-cli .)
+    echo "Done."
+fi
+
+# Run the CLI
+"$CLI_BIN" "$@"
+
+# ── Post-TUI actions ──
+# If the TUI wrote a next-action file, execute it now.
+NEXT_ACTION_FILE="$SCRIPT_DIR/.alcatraz-next-action"
+if [ -f "$NEXT_ACTION_FILE" ]; then
+    ACTION="$(head -n1 "$NEXT_ACTION_FILE" | cut -d'|' -f1)"
+    TARGET="$(head -n1 "$NEXT_ACTION_FILE" | cut -d'|' -f2)"
+    rm -f "$NEXT_ACTION_FILE"
+
+    case "$ACTION" in
+        shell)
+            echo ""
+            echo "Starting Alcatraz with project: $TARGET"
+            # Ensure container is running with the right workspace
+            ALCATRAZ_WORKSPACE="$TARGET" "$CLI_BIN" run "$TARGET" >/dev/null 2>&1 || true
+            echo "Opening shell..."
+            "$CLI_BIN" shell
+            ;;
+        run)
+            echo ""
+            echo "Starting Alcatraz with project: $TARGET"
+            "$CLI_BIN" run "$TARGET"
+            ;;
+    esac
+fi

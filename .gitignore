@@ -1,0 +1,16 @@
+# Local config / secrets / state
+.env
+.alcatraz-state
+.alcatraz-workspaces
+.alcatraz-workspaces.tmp
+docker-compose.override.yml
+
+# Runtime user data - NEVER commit (mounted workspaces + Mega Brain memory vault)
+/project/*
+!/project/.gitkeep
+/.ai-context/
+
+# Go binaries / test artifacts
+platform/backend/alcatraz
+platform/backend/healthcheck
+platform/backend/*.test

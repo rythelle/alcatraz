@@ -1,0 +1,119 @@
+# Dockerfile for Alcatraz - secure isolation of CLI tools
+FROM ubuntu:22.04
+
+# Disable interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install only the essentials (as root during build)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    python3 \
+    python3-pip \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up user and directories BEFORE restricting the system
+RUN useradd -m -s /bin/bash -u 1000 alcatraz_runner && \
+    mkdir -p /workspace && \
+    chown -R alcatraz_runner:alcatraz_runner /workspace && \
+    echo '[ -f "${HOME}/.local/state/ai-env.sh" ] && source "${HOME}/.local/state/ai-env.sh"' \
+        >> /home/alcatraz_runner/.bashrc
+
+# Prepare environment for global tools
+ENV NPM_CONFIG_PREFIX=/home/alcatraz_runner/.npm-global
+ENV PATH=/home/alcatraz_runner/.opencode/bin:/home/alcatraz_runner/.nvm/versions/node/v22.19.0/bin:/home/alcatraz_runner/.npm-global/bin:/home/alcatraz_runner/.local/bin:/home/alcatraz_runner/.claude/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV HOME=/home/alcatraz_runner
+
+# Create directory structure BEFORE installing as user (avoids permission errors)
+RUN mkdir -p \
+    /home/alcatraz_runner/.npm-global \
+    /home/alcatraz_runner/.claude \
+    /home/alcatraz_runner/.config \
+    /home/alcatraz_runner/.config/opencode \
+    /home/alcatraz_runner/.local/bin \
+    /home/alcatraz_runner/.local/share \
+    /home/alcatraz_runner/.cache \
+    /home/alcatraz_runner/.ai-context \
+    /home/alcatraz_runner/.codex \
+    /home/alcatraz_runner/.gemini \
+    /home/alcatraz_runner/.opencode/bin && \
+    chown -R alcatraz_runner:alcatraz_runner /home/alcatraz_runner
+
+# Define workspace
+WORKDIR /workspace
+
+# Switch to the non-root user for EVERYTHING from here on
+USER alcatraz_runner
+
+# Install useful Python tools as non-root
+RUN pip install --user --no-cache-dir \
+    anthropic \
+    google-generativeai \
+    openai \
+    requests \
+    2>/dev/null || true
+
+# Install NVM and Node.js (version controlled by the build arg)
+ARG NODE_VERSION=22.19
+
+ENV NVM_DIR=/home/alcatraz_runner/.nvm
+RUN unset NPM_CONFIG_PREFIX && \
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && \
+    . "$NVM_DIR/nvm.sh" && \
+    nvm install "${NODE_VERSION}" && \
+    nvm alias default "${NODE_VERSION}" && \
+    nvm cache clear && \
+    NODE_BIN="$(nvm which default)" && \
+    NODE_DIR="$(dirname "$NODE_BIN")" && \
+    ln -sf "$NODE_BIN"       /home/alcatraz_runner/.local/bin/node && \
+    ln -sf "$NODE_DIR/npm"   /home/alcatraz_runner/.local/bin/npm  && \
+    ln -sf "$NODE_DIR/npx"   /home/alcatraz_runner/.local/bin/npx
+
+ENV NPM_CONFIG_PREFIX=
+
+# Gemini CLI - no curl/binary installer, npm is the only option
+RUN . "$NVM_DIR/nvm.sh" && \
+    npm install -g @google/gemini-cli && npm cache clean --force || echo "Gemini CLI install falhou"
+
+# Install Claude Code via curl and copy the binary to ~/.local/bin (outside volumes)
+# ~/.local/share is overridden by the alcatraz-pnpm-store volume at runtime, so
+# we need a real copy of the binary in ~/.local/bin (not a symlink into the volume).
+RUN SINGLE_EXE=1 curl -fsSL https://claude.ai/install.sh | bash && \
+    CLAUDE_TARGET=$(readlink -f /home/alcatraz_runner/.local/bin/claude 2>/dev/null) && \
+    if [ -f "$CLAUDE_TARGET" ]; then \
+        cp --remove-destination "$CLAUDE_TARGET" /home/alcatraz_runner/.local/bin/claude; \
+        echo "Claude Code: binary copied to ~/.local/bin/claude"; \
+    else \
+        echo "Claude Code install via curl falhou"; \
+    fi
+
+# Install opencode via the official script and copy the binary to ~/.local/bin (outside volumes)
+# ~/.opencode is mounted as tmpfs at runtime (to allow writes), so the binary
+# must live in ~/.local/bin/opencode as a real copy.
+RUN curl -fsSL https://opencode.ai/install | bash && \
+    if [ -f /home/alcatraz_runner/.opencode/bin/opencode ]; then \
+        cp /home/alcatraz_runner/.opencode/bin/opencode /home/alcatraz_runner/.local/bin/opencode; \
+        echo "opencode: binary copied to ~/.local/bin/opencode"; \
+    else \
+        echo "OpenCode install via curl falhou"; \
+    fi
+
+# Install Codex (OpenAI) via npm
+RUN npm install -g @openai/codex && npm cache clean --force && \
+    echo "Codex: instalado via npm"
+
+# Init script that checks available tools
+RUN mkdir -p /workspace/.alcatraz && \
+    echo '#!/bin/bash' > /workspace/.alcatraz/init.sh && \
+    echo 'echo "[Alcatraz] Available tools:"' >> /workspace/.alcatraz/init.sh && \
+    echo 'command -v node && echo "  ✓ Node.js: $(node -v)"' >> /workspace/.alcatraz/init.sh && \
+    echo 'command -v npm && echo "  ✓ NPM: $(npm -v)"' >> /workspace/.alcatraz/init.sh && \
+    echo 'command -v python3 && echo "  ✓ Python3: $(python3 -V)"' >> /workspace/.alcatraz/init.sh && \
+    echo 'command -v git && echo "  ✓ Git: $(git -v)"' >> /workspace/.alcatraz/init.sh && \
+    echo 'echo ""' >> /workspace/.alcatraz/init.sh && \
+    chmod +x /workspace/.alcatraz/init.sh
+
+# Expose only stdin/stdout
+ENTRYPOINT ["/bin/bash"]
+CMD ["-c", "echo 'Alcatraz ready. Mount your project with -v /seu/project:/workspace'"]
