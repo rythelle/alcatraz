@@ -55,7 +55,6 @@ services:
         NODE_VERSION: ${NODE_VERSION:-22.19}
 
     volumes:
-      - ${ALCATRAZ_WORKSPACE:-./project}:/workspace:rw
       - alcatraz-claude-data:/home/alcatraz_runner/.claude
       # - ~/.claude.json:/home/alcatraz_runner/.claude.json:rw  # REMOVED - causes host/container trust conflict
       - ~/.claude/skills:/home/alcatraz_runner/.claude/skills:rw
@@ -160,6 +159,8 @@ services:
       # Mega Brain optional prefix grouping (set both to enable)
       - MEGABRAIN_GROUP_PREFIX=${MEGABRAIN_GROUP_PREFIX:-}
       - MEGABRAIN_GROUP_DIR=${MEGABRAIN_GROUP_DIR:-}
+      # Real project name from the host workspace path (fixes /workspace basename issue)
+      - ALCATRAZ_PROJECT_NAME=${ALCATRAZ_PROJECT_NAME:-}
 
     stdin_open: true
     tty: true

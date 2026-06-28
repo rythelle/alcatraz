@@ -104,6 +104,7 @@ resolve_workspace() {
     fi
 
     export ALCATRAZ_WORKSPACE="$path"
+    export ALCATRAZ_PROJECT_NAME="$(basename "$ALCATRAZ_WORKSPACE")"
     save_workspace
     log_success "Project: $ALCATRAZ_WORKSPACE -> /workspace"
 }
@@ -118,6 +119,7 @@ load_workspace() {
         source "$STATE_FILE"
     fi
     export ALCATRAZ_WORKSPACE="${ALCATRAZ_WORKSPACE:-$SCRIPT_DIR/project}"
+    export ALCATRAZ_PROJECT_NAME="$(basename "$ALCATRAZ_WORKSPACE")"
 }
 
 # ===== FAVORITE WORKSPACES =====
@@ -393,45 +395,53 @@ check_credentials() {
 
 # ===== MULTI-PROJECT OVERRIDE =====
 
-# Read PROJECT_PATHS from env or .env and generate docker-compose.override.yml
-# with extra volumes mounting each project at /workspace/projects/<name>.
-# Remove the override file if PROJECT_PATHS is empty.
+# Generate docker-compose.override.yml mounting every project under
+# /workspace/projects/<name>: the active ALCATRAZ_WORKSPACE first, then
+# any extra paths from PROJECT_PATHS (.env). Removes the file when empty.
 generate_projects_override() {
     local override="$SCRIPT_DIR/$OVERRIDE_FILE"
 
+    local count=0
+    local alcatraz_volumes=()
+    local seen_names=()
+
+    _already_seen() {
+        local n="$1" s
+        for s in "${seen_names[@]}"; do [ "$s" = "$n" ] && return 0; done
+        return 1
+    }
+
+    _add_path() {
+        local p="$1"
+        [ -z "$p" ] && return
+        p="$(realpath "$p" 2>/dev/null || readlink -f "$p" 2>/dev/null || echo "$p")"
+        [ ! -d "$p" ] && return
+        local name
+        name="$(basename "$p")"
+        _already_seen "$name" && return
+        seen_names+=("$name")
+        alcatraz_volumes+=("      - ${p}:/workspace/projects/${name}:rw")
+        count=$((count + 1))
+    }
+
+    # Active workspace goes in first
+    _add_path "${ALCATRAZ_WORKSPACE:-}"
+
+    # Extra paths from PROJECT_PATHS
     local paths="${PROJECT_PATHS:-}"
     if [ -z "$paths" ] && [ -f "$SCRIPT_DIR/.env" ]; then
         paths="$(grep '^PROJECT_PATHS=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d'=' -f2- | head -n1 || true)"
     fi
-
-    if [ -z "$paths" ]; then
-        rm -f "$override"
-        return 0
+    if [ -n "$paths" ]; then
+        IFS=',' read -ra path_array <<< "$paths"
+        for raw_path in "${path_array[@]}"; do
+            local p
+            p="${raw_path#"${raw_path%%[![:space:]]*}"}"
+            p="${p%"${p##*[![:space:]]}"}"
+            [ -z "$p" ] && continue
+            _add_path "$p"
+        done
     fi
-
-    local count=0
-    local alcatraz_volumes=()
-
-    IFS=',' read -ra path_array <<< "$paths"
-    for raw_path in "${path_array[@]}"; do
-        local path
-        path="${raw_path#"${raw_path%%[![:space:]]*}"}"
-        path="${path%"${path##*[![:space:]]}"}"
-
-        if [ -z "$path" ]; then continue; fi
-
-        path="$(realpath "$path" 2>/dev/null || readlink -f "$path" 2>/dev/null || echo "$path")"
-        if [ ! -d "$path" ]; then
-            log_warn "PROJECT_PATHS: skipping non-existent path: $path"
-            continue
-        fi
-
-        local name
-        name="$(basename "$path")"
-        alcatraz_volumes+=("      - ${path}:/workspace/projects/${name}:rw")
-        log_success "Extra project: $path -> /workspace/projects/$name"
-        count=$((count + 1))
-    done
 
     if [ "$count" -eq 0 ]; then
         rm -f "$override"
@@ -576,8 +586,13 @@ main() {
             check_container_running
             local -a env_args=()
             collect_api_env_args env_args
+            local workdir="/workspace"
+            load_workspace &>/dev/null
+            if [ -n "${ALCATRAZ_WORKSPACE:-}" ]; then
+                workdir="/workspace/projects/$(basename "$ALCATRAZ_WORKSPACE")"
+            fi
             log_info "Opening a shell in the container..."
-            $DC $(dc_flags) exec "${env_args[@]}" alcatraz bash
+            $DC $(dc_flags) exec "${env_args[@]}" --workdir "$workdir" alcatraz bash
             ;;
 
         stop)

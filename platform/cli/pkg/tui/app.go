@@ -436,8 +436,10 @@ func (a *App) doRun(path string) tea.Cmd {
 	absPath, _ := filepath.Abs(path)
 	prevWorkspace := a.State.GetWorkspace()
 	a.State.SetWorkspace(absPath)
-	os.Setenv("ALCATRAZ_WORKSPACE", absPath)
 	docker.EnsureContextDir(a.ProjectRoot)
+
+	extraPaths := config.LoadProjectPaths(a.ProjectRoot)
+	_ = a.Compose.GenerateOverride(absPath, extraPaths)
 
 	name := filepath.Base(absPath)
 	if ws, _ := a.WorkspaceMgr.Load(); ws[name] == "" {

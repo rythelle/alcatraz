@@ -141,8 +141,12 @@ func runCmd() *cobra.Command {
 			absPath, _ := filepath.Abs(path)
 			prevWorkspace := state.GetWorkspace()
 			state.SetWorkspace(absPath)
-			os.Setenv("ALCATRAZ_WORKSPACE", absPath)
 			docker.EnsureContextDir(projectRoot)
+
+			extraPaths := config.LoadProjectPaths(projectRoot)
+			if err := compose.GenerateOverride(absPath, extraPaths); err != nil {
+				return err
+			}
 
 			if len(args) > 0 {
 				name := filepath.Base(absPath)
@@ -317,8 +321,12 @@ func shellCmd() *cobra.Command {
 				}
 				absPath, _ := filepath.Abs(path)
 				state.SetWorkspace(absPath)
-				os.Setenv("ALCATRAZ_WORKSPACE", absPath)
 				docker.EnsureContextDir(projectRoot)
+
+				extraPaths := config.LoadProjectPaths(projectRoot)
+				if err := compose.GenerateOverride(absPath, extraPaths); err != nil {
+					return err
+				}
 
 				if compose.IsRunning("alcatraz") {
 					compose.Down(false).Run()
@@ -337,8 +345,13 @@ func shellCmd() *cobra.Command {
 				fmt.Printf("✓ Alcatraz running with %s\n\n", absPath)
 			}
 
+			ws := state.GetWorkspace()
+			workdir := "/workspace"
+			if ws != "" {
+				workdir = "/workspace/projects/" + filepath.Base(ws)
+			}
 			envArgs := config.CollectAPIEnvArgs()
-			c := compose.ExecInteractive("alcatraz", "/workspace", envArgs...)
+			c := compose.ExecInteractive("alcatraz", workdir, envArgs...)
 			c.Stdin = os.Stdin
 			c.Stdout = os.Stdout
 			c.Stderr = os.Stderr
