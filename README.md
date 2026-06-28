@@ -6,577 +6,320 @@
   </picture>
 </p>
 
-# Alcatraz - Isolated Sandbox for AI Tools
+# Alcatraz — Isolated Sandbox for AI Tools
 
-Docker containerization with strong isolation to run command-line AI agents - **Claude Code, Gemini CLI, OpenAI Codex, and opencode** - safely, **straight from the terminal**. Your project lives in `./project/` (host) and is mounted as `/workspace` in the container. All HTTP/HTTPS traffic goes through a Go MITM proxy (**Data Guardian** / Lighthouse) that sanitizes sensitive data before it reaches the AI providers, then through a Squid proxy that restricts access to a domain whitelist. Includes the **Mega Brain**: persistent, dynamic per-project memory, with auto-load and auto-save across sessions and models.
+Docker-based isolation to run AI coding agents — **Claude Code, Gemini CLI, OpenAI Codex, and opencode** — safely from the terminal. You can point Alcatraz at any project in three ways: drop your code in `./project/` (the default folder), pass a path directly (`alcatraz run ~/projects/my-app`), or save named aliases and switch with a short command (`alcatraz save myapp ~/projects/my-app` → `alcatraz run myapp`). After the first run, the last used project is remembered automatically — just `alcatraz run` brings it back. Whichever way you choose, the project is mounted as `/workspace` inside the container. All outbound traffic goes through a Go MITM proxy that scrubs sensitive data before it reaches any AI provider, then through a Squid proxy that enforces a domain whitelist. Includes **Mega Brain**: persistent, per-project memory that auto-loads and auto-saves across sessions and models.
+
+---
+
+## Motivations
+
+AI coding agents are powerful — and by design they read your codebase, write files, and call external APIs. That power comes with real risks that are easy to overlook:
+
+**Sensitive data leakage.** When an agent reads your project, it reads everything: `.env` files, config files, tokens, private keys, credentials. All of that ends up verbatim in the prompt payload sent to the provider's API. Alcatraz puts a MITM proxy (the **Data Guardian**) in the path of every outbound request and redacts ~90 categories of secrets — API keys, cloud credentials, PII, SSH keys, database URLs — before they leave your machine.
+
+**Uncontrolled filesystem access.** Without limits, an agent can read, write, or delete anything your user account can touch. Alcatraz runs the agent inside a container with a read-only root filesystem. Only `/workspace` (your project) is writable, and only from inside the container.
+
+**Supply chain attacks via package managers.** Recent compromised npm and PyPI packages have been used to exfiltrate environment variables and files by running malicious `postinstall` scripts. When `npm install` runs inside Alcatraz, the container has no direct internet access, can't reach arbitrary hosts, can't read your home directory, and can't execute host-level syscalls like `ptrace` or `mount`. A compromised package can at most damage `/workspace` — your host is untouched.
+
+**Unrestricted network access.** By default, a process running on your machine can reach any host on the internet. Alcatraz routes all traffic through Squid with an explicit allowlist: only the domains the tools actually need (npm registry, PyPI, Claude, Gemini, OpenAI, GitHub) are reachable. Everything else is blocked at the proxy level.
+
+The result is a controlled environment where the agent can do its job — read your code, install dependencies, call the AI provider — but can't exfiltrate secrets, can't touch the rest of your filesystem, and can't reach arbitrary external hosts.
+
+---
 
 ## Table of contents
 
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+- [Quick start](#quick-start)
 - [Credentials](#credentials)
-- [Mega Brain (persistent memory)](#mega-brain)
+- [Mega Brain](#mega-brain)
 - [Commands](#commands)
-  - [Alcatraz CLI (Go binary)](#alcatraz-cli-go-binary)
-- [AI tools](#ai-tools)
-- [Project structure](#project-structure)
-- [Architecture and security](#architecture-and-security)
-- [Customization](#customization)
-- [Troubleshooting](#troubleshooting)
+- [Technical reference](#technical-reference)
+- [Contributing](#contributing)
 
 ---
 
 ## Prerequisites
 
 - Docker 20.10+
-- Docker Compose V2 (plugin) - **do not use V1 (`docker-compose` standalone)**
+- Docker Compose V2 (plugin — **not** the standalone `docker-compose` V1)
+- Go 1.21+ (used by `install.sh` to compile the CLI)
 
 ```bash
-# Ubuntu/Debian (installs the V2 plugin)
-sudo apt-get install -y docker.io docker-compose-plugin
+# Ubuntu/Debian
+sudo apt-get install -y docker.io docker-compose-plugin golang-go
 sudo usermod -aG docker $USER && newgrp docker
 
 # macOS
-brew install docker docker-compose
+brew install docker docker-compose go
 
-# Windows - install Docker Desktop and use WSL2
+# Windows — install Docker Desktop, WSL2, and Go from https://go.dev/dl
 ```
 
-> **Why V2?** Docker Compose V1 (standalone `docker-compose`) has incompatibilities with Docker Engine 25+ - for example, it treats `cpus` as a string instead of a float and fails on `up --no-build` without an explicit `image:` in the service. This project uses V2 (`docker compose` as a plugin) to avoid those issues.
+> **Why V2?** Docker Compose V1 has incompatibilities with Docker Engine 25+: it treats `cpus` as a string instead of a float and fails on `up --no-build` without an explicit `image:`. This project requires V2 (`docker compose` as a plugin).
 
 ---
 
 ## Installation
 
 ```bash
-# 1. Make the scripts executable
-chmod +x alcatraz.sh test-security.sh
-
-# 2. (Optional) Configure the memory vault
-cp .env.example .env
-# By default memory lives in ./.ai-context (local). To sync with
-# Obsidian/OneDrive, set AI_CONTEXT_PATH in .env.
-
-# 3. Start, pointing at your project
-./alcatraz.sh run /path/to/your/project
+git clone https://github.com/youruser/alcatraz
+cd alcatraz
+./install.sh
+source ~/.zshrc   # or ~/.bashrc
 ```
 
-The first `run` builds the image automatically (may take a few minutes). After that it just restarts the container - a few seconds.
+`install.sh` checks dependencies (Docker, Go), compiles the Go CLI, creates a symlink at `~/.local/bin/alcatraz`, and adds it to your PATH. After that, `alcatraz` is available from anywhere.
 
-To recreate everything from scratch (volumes included):
+To update later:
 
 ```bash
-./alcatraz.sh clean && ./alcatraz.sh run /path/to/your/project
+git -C ~/path/to/alcatraz pull && ~/path/to/alcatraz/install.sh
 ```
 
-### Memory vault configuration
+> **(Optional)** Set a custom memory vault path before running — see [Mega Brain](#mega-brain):
+> ```bash
+> cp .env.example .env
+> # edit AI_CONTEXT_PATH in .env
+> ```
 
-The vault path is set via the `AI_CONTEXT_PATH` environment variable. docker-compose reads `.env` automatically. The default is the local `./.ai-context`; point it at your Obsidian/OneDrive vault to sync:
+The first `alcatraz run` builds the Docker image automatically (a few minutes). After that, starting the container takes a few seconds.
+
+---
+
+## Quick start
 
 ```bash
-# .env
-AI_CONTEXT_PATH=/mnt/c/Users/your-user/OneDrive/Documents/AIContext
+# Start with your project
+alcatraz run ~/projects/my-app
+
+# Open a shell inside the sandbox
+alcatraz shell
+
+# Run a command directly
+alcatraz exec 'claude "refactor the auth module"'
+
+# Stop when you're done
+alcatraz stop
 ```
 
-Or export it before running:
+`alcatraz` is the primary CLI. It provides an interactive TUI when called with no arguments:
 
 ```bash
-export AI_CONTEXT_PATH=/mnt/c/Users/your-user/OneDrive/Documents/AIContext
-./alcatraz.sh run /my/project
+# Interactive TUI — easiest way to get started
+alcatraz
 ```
-
-**Common paths:**
-
-| Environment      | Path                                               |
-| ---------------- | -------------------------------------------------- |
-| Local (default)  | `./.ai-context`                                    |
-| Windows via WSL2 | `/mnt/c/Users/{user}/OneDrive/Documents/AIContext` |
-| Native Linux     | `/home/{user}/Documents/AIContext`                 |
-| macOS            | `/Users/{user}/Documents/AIContext`                |
 
 ---
 
 ## Credentials
 
-OAuth credentials are stored in **named volumes** and persist across sessions. Authenticate once inside the container - you won't need to do it again.
+OAuth credentials are stored in named Docker volumes and persist across sessions. Authenticate once, then forget about it.
 
-### How it works per tool
+| Tool               | How auth works                                        |
+| ------------------ | ----------------------------------------------------- |
+| **Claude Code**    | OAuth — run `claude` inside the container once        |
+| **Gemini CLI**     | OAuth — run `gemini auth` inside the container once   |
+| **OpenAI / Codex** | API key — set `OPENAI_API_KEY` in `.env`              |
+| **opencode**       | Provider key — set `ANTHROPIC_API_KEY` or similar in `.env` |
 
-| Tool               | Storage                              | First-time setup                                      |
-| ------------------ | ------------------------------------ | ------------------------------------------------------ |
-| **Claude Code**    | Named volume `alcatraz-claude-data`  | Run `claude` inside container, complete OAuth          |
-| **Gemini CLI**     | Named volume `alcatraz-gemini-data`  | Run `gemini auth` inside container                     |
-| **OpenAI / Codex** | env var (passed at `exec` time)      | `export OPENAI_API_KEY` before `./alcatraz.sh run`     |
-| **opencode**       | env var (passed at `exec` time)      | `export OPENCODE_API_KEY` or provider keys             |
-
-### First-time setup (Claude & Gemini)
-
-Authenticate inside the container on first run:
+**First-time OAuth setup:**
 
 ```bash
-./alcatraz.sh shell
-# Inside container:
-
-# Claude Code - opens browser for OAuth
-claude
-
-# Gemini CLI - interactive auth flow
-gemini auth
-
-# opencode - manage providers/credentials
-opencode providers
-
-# Exit after auth completes
+alcatraz shell
+# Inside the container:
+claude        # opens browser for OAuth (Claude Code)
+gemini auth   # interactive auth flow (Gemini CLI)
 exit
-# Next sessions: credentials persist in volume
+# Credentials are now stored in named volumes — no repeat needed
 ```
 
-### OpenAI / Codex (API key)
-
-OpenAI and Codex use API keys, not OAuth. Add them to `.env` for persistent access:
-
-```bash
-# In .env (copied from .env.example):
-OPENAI_API_KEY=sk-...
-```
-
-Then run normally:
-
-```bash
-./alcatraz.sh exec 'codex "add error handling"'
-```
-
-### opencode
-
-Same as OpenAI - add to `.env`:
+**API keys (OpenAI, opencode):**
 
 ```bash
 # In .env:
-OPENCODE_API_KEY=sk-...
-# or use a provider key:
-ANTHROPIC_API_KEY=sk-...
 OPENAI_API_KEY=sk-...
-GOOGLE_API_KEY=...
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ---
 
 ## Mega Brain
 
-Persistent, **dynamic**, per-project memory, stored on the host (and syncable with Obsidian/OneDrive if you point `AI_CONTEXT_PATH` at your vault). Context survives across sessions and models. Each model gets instructions in its native format, but they all share the same backend (`mega-brain`, alias `brain`).
+Persistent, per-project memory stored on the host and synced across sessions and models. When you start a session, context is injected automatically. When the session ends, learnings are saved automatically. No manual `load` or `save` needed.
 
-**Truly dynamic:**
-
-- **Auto-load** - when you start Claude Code / Gemini CLI / Codex / opencode in the project folder, the context is injected automatically via a `SessionStart` hook. No need to run `load`.
-- **Auto-save** - models are instructed to record preferences/learnings on the spot (`mega-brain remember ...`) and complete tasks (`mega-brain done ...`) without being asked. A session-end hook records the timeline as a backstop.
-- **No native memory** - each LLM's internal memory is avoided/disabled (e.g. Gemini's `save_memory` tool); everything goes to Mega Brain.
-- **Auto-init** - a new project is initialized on its own at first load.
-
-### How it works
-
-The vault set in `AI_CONTEXT_PATH` (`.env`) is mounted at `/home/alcatraz_runner/.ai-context` inside the container. Routing is automatic, by the git repo name in `/workspace`:
-
-| Project                   | Vault path           |
-| ------------------------- | -------------------- |
-| Most repositories         | `{vault}/{project}/` |
-| User preferences (global) | `{vault}/_global/`   |
-
-> **Optional prefix grouping:** set `MEGABRAIN_GROUP_PREFIX` and `MEGABRAIN_GROUP_DIR` (in `.env`) to route repos whose name starts with the prefix into a subfolder. Example: `MEGABRAIN_GROUP_PREFIX=acme-` and `MEGABRAIN_GROUP_DIR=Acme` routes `acme-web` to `{vault}/Acme/acme-web/`. Disabled by default.
-
-### Per-project context structure
-
-```
-{project}/
-├── INDEX.md
-├── Context/
-│   ├── current-task.md    # active task
-│   ├── architecture.md
-│   └── stack.md
-├── Memory/
-│   ├── patterns/
-│   ├── decisions/
-│   └── gotchas/
-├── Tasks/
-│   ├── active/
-│   ├── done/
-│   └── backlog/
-└── Logs/
-    └── timeline.md
-```
-
-### `mega-brain` commands - work in any model
+**Where memory lives:** controlled by `AI_CONTEXT_PATH` in `.env`. Defaults to `./.ai-context`. Point it at an Obsidian or OneDrive vault to sync across machines:
 
 ```bash
-mega-brain context-md                                  # markdown context (hook payload)
-mega-brain load                                        # load/inspect context manually
-mega-brain init                                        # initialize a new project (usually automatic)
-mega-brain task "name"                                 # create/load a task and set it active
-mega-brain remember pattern|decision|gotcha|note|preference "name" ["content"]
-mega-brain done ["learning 1; learning 2"]             # finish a task and save learnings
-mega-brain context                                     # quick summary (shown when the container opens)
-mega-brain path                                        # project path in the vault
-mega-brain global-path                                 # global partition path (preferences)
+# .env
+AI_CONTEXT_PATH=/mnt/c/Users/youruser/OneDrive/Documents/AIContext
 ```
 
-> `preference` writes to the **global** partition (applies to all projects); the other types write to the current project's memory. The old `brain` command still works as an alias.
+**Available commands (run these inside the container or via `exec`):**
 
-### Per model
+```bash
+mega-brain load                                # inspect the current context
+mega-brain task "name"                         # set the active task
+mega-brain remember pattern "name"             # save a code/design pattern
+mega-brain remember decision "name"            # save an architectural decision
+mega-brain remember gotcha "name"              # save a gotcha or pitfall
+mega-brain remember note "name"                # save a general note
+mega-brain remember preference "name"          # save a preference (writes to global partition)
+mega-brain done ["learning 1; learning 2"]     # finish a task and save learnings
+mega-brain context                             # quick summary
+```
 
-Context is loaded **automatically** by session-start hooks. Each model has an instruction file in its native format under `mega-brain/`:
-
-| Model        | Instruction file                | Auto-load via                                                           |
-| ------------ | ------------------------------- | ----------------------------------------------------------------------- |
-| Claude Code  | `mega-brain/claude/SKILL.md`    | `SessionStart` hook (`~/.claude/settings.json`)                         |
-| Gemini CLI   | `mega-brain/gemini/GEMINI.md`   | `SessionStart` hook (`~/.gemini/settings.json`)                         |
-| OpenAI Codex | `mega-brain/codex/AGENTS.md`    | `SessionStart` hook (`~/.codex/config.toml`)                            |
-| opencode     | `mega-brain/opencode/AGENTS.md` | plugin `~/.config/opencode/plugin/mega-brain.js` (+ AGENTS.md fallback) |
-
-Hooks are injected at container boot by `docker-init/mega-brain-init.sh`. No manual configuration is needed - context appears on its own and learnings are saved on their own.
-
-To add support for a new model, see `mega-brain/ADDING-NEW-MODEL.md`.
+Memory is per-project (routed by git repo name). The `preference` type writes to a global partition that applies across all projects.
 
 ---
 
 ## Commands
 
-```bash
-./alcatraz.sh build                       # Build the Docker image
-./alcatraz.sh run [PATH|ALIAS]            # Start, mounting PATH (or ALIAS) as /workspace
-                                          #   no argument: uses ./project (created if missing)
-                                          #   with PATH: mounts the given directory
-                                          #   with ALIAS: mounts a saved favorite workspace
-                                          #   if already running: restarts with the new path
-                                          #   builds only if the image is missing; waits for the Guardian
-./alcatraz.sh run --rebuild               # Same as run, but forces an image rebuild
-./alcatraz.sh save NAME [PATH]            # Save current workspace (or PATH) as a favorite
-./alcatraz.sh list                        # List saved favorite workspaces
-./alcatraz.sh remove NAME                 # Remove a favorite workspace
-./alcatraz.sh exec 'COMMAND'              # Run a command in the container
-./alcatraz.sh shell                       # Interactive shell
-./alcatraz.sh stop                        # Stop everything (Squid + Guardian + jail)
-./alcatraz.sh clean                       # Stop + remove container and volumes
-./alcatraz.sh status                      # Status + currently mounted project
-./alcatraz.sh resources                   # Live docker stats
-./alcatraz.sh logs [SERVICE]              # Tail logs (default: jail; 'logs guardian' / 'logs squid')
-
-# Security validation
-./test-security.sh
-```
-
-### Alcatraz CLI (`./alcatraz`)
-
-> **Prefer `./alcatraz` over `./alcatraz.sh`** — it's a smart wrapper around the native Go CLI that auto-builds if needed and provides an interactive TUI.
-
-The `./alcatraz` wrapper detects if the Go binary is missing (or stale) and compiles it automatically. All commands are delegated to the Go CLI:
+All commands go through `alcatraz`. The older `./alcatraz.sh` script still works as a fallback, but the CLI is the preferred interface.
 
 ```bash
-# Interactive TUI (no args) — easiest way to get started
-./alcatraz
-
-# Or use individual commands directly
-./alcatraz build                    # Build the Docker image
-./alcatraz run [PATH|ALIAS]         # Start the sandbox
-./alcatraz run --rebuild            # Force rebuild
-./alcatraz save <name> [path]       # Save a favorite workspace
-./alcatraz list                     # List favorites + PROJECT_PATHS
-./alcatraz remove <name>            # Remove a favorite
-./alcatraz exec 'COMMAND'           # Run a command inside the container
-./alcatraz shell [PATH|ALIAS]       # Interactive shell (starts if needed)
-./alcatraz stop                     # Stop all containers
-./alcatraz clean                    # Stop + remove volumes
-./alcatraz status                   # Show status + workspace
-./alcatraz resources                # Live Docker stats
-./alcatraz logs [SERVICE]           # Tail logs (jail|guardian|squid)
-./alcatraz test-guardian            # Run Data Guardian tests
-./alcatraz test-security            # Run security isolation tests
-./alcatraz tui                      # Launch TUI explicitly
+alcatraz                          # Interactive TUI
+alcatraz run [PATH|ALIAS]         # Start sandbox, mount PATH or saved alias
+alcatraz run --rebuild            # Start with a forced image rebuild
+alcatraz shell [PATH|ALIAS]       # Open an interactive shell (starts if needed)
+alcatraz exec 'COMMAND'           # Run a one-off command in the container
+alcatraz stop                     # Stop all containers
+alcatraz status                   # Show running status and current workspace
+alcatraz logs [SERVICE]           # Tail logs: jail (default), guardian, squid
+alcatraz save NAME [PATH]         # Save a workspace alias
+alcatraz list                     # List saved aliases
+alcatraz remove NAME              # Remove a saved alias
+alcatraz clean                    # Stop + delete containers and volumes (destructive)
+alcatraz resources                # Live Docker resource stats
+alcatraz test-guardian            # Run Data Guardian sanitizer tests
+alcatraz test-security            # Run full security isolation test suite
 ```
 
-**What `./alcatraz` adds over `./alcatraz.sh`:**
-
-| Feature | Script (`./alcatraz.sh`) | CLI (`./alcatraz`) |
-| ------- | ------------------------ | ------------------ |
-| Auto-build Go CLI | ❌ | ✅ — compiles automatically if needed |
-| Interactive TUI | ❌ | ✅ — Bubble Tea interface |
-| `PROJECT_PATHS` auto-detect | ❌ | ✅ — lists detected projects in `list` |
-| `run --rebuild` flag | ❌ | ✅ |
-| `shell [PATH]` — auto-start | ❌ | ✅ |
-| Alias `ls` for `list` | ❌ | ✅ |
-| Alias `rm` for `remove` | ❌ | ✅ |
-
-> **Tip:** Both tools share the same state files (`.alcatraz-state`, `.alcatraz-workspaces`), so you can mix them freely.
-
-### Favorite workspaces (switch between projects)
-
-Save workspaces under short names to switch quickly without typing the full path:
+**Workspace aliases** let you switch between projects without typing full paths:
 
 ```bash
-# Save the current project as "retro"
-./alcatraz.sh run ~/projects/tetris
-./alcatraz.sh save tetris
+alcatraz save api ~/projects/my-api
+alcatraz save web ~/projects/my-web
 
-# Save a specific path as "api"
-./alcatraz.sh save api ~/projects/my-api
-
-# List favorites
-./alcatraz.sh list
-
-# Switch between projects
-./alcatraz.sh stop
-./alcatraz.sh run tetris
-
-./alcatraz.sh stop
-./alcatraz.sh run api
-
-# Remove a favorite
-./alcatraz.sh remove api
+alcatraz run api    # mounts ~/projects/my-api
+alcatraz stop
+alcatraz run web    # mounts ~/projects/my-web
 ```
 
-Favorites are stored in `.alcatraz-workspaces` (gitignored) as `name=/absolute/path`.
-
-> **Tip:** `exec` and `shell` always reuse the last active workspace (saved in `.alcatraz-state`). Use `run` or `use` to switch explicitly.
-
-### Context persistence across sessions
-
-The container is **stateless** - everything outside `/workspace` is lost on stop. **What persists:**
-
-| Type                           | Persists? | Where                                                              |
-| ------------------------------ | --------- | ------------------------------------------------------------------ |
-| **Your project files**         | Yes       | Host bind mount at `/workspace`                                    |
-| **npm/pip caches**             | Yes       | Named volumes (`alcatraz-node-cache`, `alcatraz-pip-cache`)        |
-| **Claude/opencode configs**    | Yes       | Named volumes (`alcatraz-claude-data`, `alcatraz-opencode-config`) |
-| **/tmp, ~/.config, ~/.gemini** | No        | tmpfs - cleared on stop (Gemini config is regenerated at boot)     |
-| **Shell history**              | No        | Not in a named volume                                              |
-
-To keep context across stops and restarts:
+**`PROJECT_PATHS`** — set in `.env` to make `alcatraz list` auto-detect projects from comma-separated directories, and to mount them all at `/workspace/projects/<folder-name>` inside the container:
 
 ```bash
-# Stop (preserves volumes)
-./alcatraz.sh stop
-
-# Come back later - reopens the last project
-./alcatraz.sh run
-# or
-./alcatraz.sh exec 'npm test'
-# or
-./alcatraz.sh shell
+# .env
+PROJECT_PATHS=/home/you/projects/api,/home/you/projects/web
 ```
 
-> **`clean` destroys everything** - volumes, configs, and caches. Use it only to fully reset state.
+**What persists across `stop`/`run` cycles:**
 
-**Configurable environment variables:**
+| Data                        | Persists | Storage                          |
+| --------------------------- | -------- | -------------------------------- |
+| Your project files          | Yes      | Host bind mount (`/workspace`)   |
+| Claude / opencode auth      | Yes      | Named volumes                    |
+| npm / pip caches            | Yes      | Named volumes                    |
+| Mega Brain memory           | Yes      | Host path (`AI_CONTEXT_PATH`)    |
+| `/tmp`, shell history       | No       | tmpfs — cleared on stop          |
 
-| Variable                 | Default | Description                                          |
-| ------------------------ | ------- | ---------------------------------------------------- |
-| `TIMEOUT_SECONDS`        | `300`   | Max timeout per command                              |
-| `MAX_FILE_SIZE_MB`       | `1000`  | Max file size guard                                  |
-| `MEGABRAIN_GROUP_PREFIX` | (unset) | Repo name prefix for vault grouping (see Mega Brain) |
-| `MEGABRAIN_GROUP_DIR`    | (unset) | Subfolder for grouped repos                          |
-
-```bash
-# Example with a custom timeout
-TIMEOUT_SECONDS=600 ./alcatraz.sh exec 'npm run build'
-```
+> `alcatraz clean` removes everything including named volumes. Use it only to fully reset state.
 
 ---
 
-## AI tools
+## Technical reference
 
-All tools come preinstalled in the image. See the [Credentials](#credentials) section for how authentication works.
-
-### Claude Code
-
-```bash
-# Authenticate once inside container with ./alcatraz.sh shell
-./alcatraz.sh exec 'claude "write a cache function"'
-```
-
-### Gemini CLI
-
-```bash
-# Authenticate inside container (config regenerates on boot unless bind mounted)
-./alcatraz.sh exec 'gemini "generate code to validate email"'
-```
-
-### OpenAI / Codex
-
-```bash
-# API key passed to container if exported in your shell
-export OPENAI_API_KEY=sk-...   # once per terminal session
-./alcatraz.sh exec 'codex "add error handling in src/index.ts"'
-```
-
-### opencode
-
-```bash
-# Uses provider keys (ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY) or OPENCODE_API_KEY
-export OPENCODE_API_KEY=...    # or export the desired provider key
-./alcatraz.sh exec 'opencode run "write tests for src/index.ts"'
-```
-
-### Example - Node.js project
-
-```bash
-./alcatraz.sh run
-./alcatraz.sh exec 'npm install'
-./alcatraz.sh exec 'npm run build'
-./alcatraz.sh exec 'npm test'
-
-# Shell for interactive development
-./alcatraz.sh shell
-# Inside the container:
-# $ npm run dev
-# $ npm test -- --watch
-```
-
-### Example - Python
-
-```bash
-./alcatraz.sh exec 'pip install -r requirements.txt'
-./alcatraz.sh exec 'python3 src/main.py'
-./alcatraz.sh exec 'pytest tests/'
-```
-
----
-
-## Project structure
-
-```
-alcatraz/
-├── Dockerfile.alcatraz          # Sandbox container image
-├── docker-compose.go.yml        # Topology and resources
-├── seccomp-profile.json         # Custom seccomp profile
-├── squid.conf                   # Proxy whitelist
-├── alcatraz.sh                  # Main CLI
-├── test-security.sh             # Security validation suite
-├── docker-init/                 # Boot-time init (Mega Brain hook injection)
-├── platform/
-│   └── backend/                 # Go: MITM proxy (Lighthouse) + Data Guardian sanitizer
-├── mega-brain/                  # Persistent, dynamic memory
-│   ├── mega-brain.sh
-│   ├── hooks/                   # SessionStart/SessionEnd hook adapters
-│   ├── claude/  codex/  gemini/  opencode/
-└── project/                     # YOUR CODE (mounted at /workspace)
-    ├── package.json
-    ├── src/
-    ├── tests/
-    └── ...
-```
-
-**Volumes persisted across runs:**
-
-- `alcatraz-node-cache` - node_modules (npm install is fast after the first time)
-- `alcatraz-pip-cache` - pip cache
-
-To clear the caches:
-
-```bash
-docker volume rm alcatraz-node-cache alcatraz-pip-cache
-```
-
----
-
-## Architecture and security
-
-### Container topology
+### Architecture
 
 ```
 Host
  └── isolated-network (bridge 172.30.0.0/16)
       ├── proxy-whitelist    (Squid, port 3128)
       ├── alcatraz-backend   (Go binary)
-      │    └── :8080  Lighthouse - MITM proxy + Data Guardian (sanitizes AI payloads)
+      │    └── :8080  Lighthouse — MITM proxy + Data Guardian
       └── alcatraz           (sandbox container)
-           ├── /workspace    <- ./project mounted rw
+           ├── /workspace    <- your project, rw
            └── http_proxy -> alcatraz-backend:8080
 ```
 
-The `alcatraz` container has no direct internet access - all HTTP/HTTPS goes through Lighthouse (MITM + sanitization) and then the Squid proxy.
+The sandbox container has no direct internet access. Every HTTP/HTTPS request goes through Lighthouse (which scrubs secrets from JSON request bodies) and then Squid (which blocks non-whitelisted domains).
 
-### Domains allowed by the proxy
+### Allowed domains
 
 `github.com`, `githubusercontent.com`, `npmjs.com`, `pypi.org`, `pythonhosted.org`, `crates.io`, `ubuntu.com`, `claude.ai`, `anthropic.com`, `googleapis.com`, `openai.com`, `statsigapi.net`
 
-To add a domain: edit `squid.conf` and run `./alcatraz.sh build`.
-
-### Data Guardian (sanitizer)
-
-Lighthouse inspects every **JSON request body** that the AI tools send upstream and
-replaces sensitive data with `[REDACTED_BY_ALCATRAZ_*]` markers _before_ it reaches the
-provider. The detection rules live in
-[`platform/backend/internal/proxy/patterns.go`](platform/backend/internal/proxy/patterns.go).
-
-**Scope — what is and isn't touched:**
-
-| Touched                                           | Not touched                                                                                        |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Request bodies with `Content-Type: *json*`        | Request/response **headers** (your `x-api-key` / `Authorization` stays intact — auth never breaks) |
-| The prompt/conversation payload sent to the model | **Responses** from the provider                                                                    |
-| Any host the proxy intercepts                     | Non-JSON bodies and binary downloads (npm/pip tarballs, etc.)                                      |
-
-Because only JSON request bodies are scrubbed, **package downloads and tool authentication
-are never affected** — the only possible side effect is a false positive redacting a
-legitimate string _inside a prompt_, which degrades context for that snippet but breaks nothing.
-
-**Categories currently covered (~90 patterns):**
-
-- **API keys & tokens** — OpenAI, Anthropic, Google, GitHub, Slack, Discord, AWS, Stripe, JWT, Bearer
-- **AI / LLM providers** — Groq, Perplexity, Replicate, HuggingFace, OpenRouter, Cohere, Mistral
-- **Captcha / automation** — 2captcha, anti-captcha, CapMonster, CapSolver, proxy credentials
-- **Git / packages / CI** — GitHub (all token types), GitLab, npm, PyPI, Docker, Atlassian
-- **Email / SMS / monitoring** — SendGrid, Mailgun, Mailchimp, Postmark, Twilio, Telegram, Sentry, New Relic
-- **E-commerce / SaaS** — Shopify, Square, Linear, Notion, Supabase, PlanetScale, Databricks, Vault
-- **Cloud credentials** — AWS (account/ARN/session), Azure (subscription/tenant/secret/storage), GCP (service account/OAuth), Cloudflare, Firebase, DigitalOcean, Terraform, Kubernetes
-- **PII (BR)** — CPF, CNPJ, RG, phone, PIX, bank account
-- **PII (global)** — email, credit card, IP, passport
-- **Cryptographic keys** — SSH/PGP/GPG private keys, generic private/secret keys
-- **Env & config** — `*_SECRET`/`*_TOKEN`/`*_PASSWORD` env vars, generic `key=value` secrets, SMTP/IMAP credentials
-
-See [Add or remove Data Guardian patterns](#add-or-remove-data-guardian-patterns) to customize.
+To add a domain, edit `squid.conf` and run `alcatraz run --rebuild`.
 
 ### Security layers
 
-| Layer        | Mechanism                                                                           |
-| ------------ | ----------------------------------------------------------------------------------- |
-| Network      | Squid proxy with whitelist; no direct internet access                               |
-| Filesystem   | Root FS `read_only: true`; writable areas are tmpfs                                 |
-| User         | Runs as `uid 1000` (`alcatraz_runner`), `no-new-privileges: true`                   |
-| Capabilities | Drops `NET_RAW`, `NET_ADMIN`, `SYS_ADMIN`, `SYS_MODULE`, `SYS_BOOT`, `DAC_OVERRIDE` |
-| Syscalls     | seccomp profile blocks ptrace, mount, BPF, io_uring, kernel modules, etc.           |
-| Resources    | 1.5 CPUs, 4 GB RAM, swap disabled, 5-min timeout                                    |
+| Layer        | Mechanism                                                                              |
+| ------------ | -------------------------------------------------------------------------------------- |
+| Network      | Squid proxy with allowlist; no direct internet access from the container               |
+| Filesystem   | Root FS `read_only: true`; only `/workspace` and `/tmp` (tmpfs) are writable           |
+| User         | Runs as `uid 1000` (`alcatraz_runner`), `no-new-privileges: true`                      |
+| Capabilities | Drops `NET_RAW`, `NET_ADMIN`, `SYS_ADMIN`, `SYS_MODULE`, `SYS_BOOT`, `DAC_OVERRIDE`   |
+| Syscalls     | Custom seccomp profile blocks `ptrace`, `mount`, `BPF`, `io_uring`, kernel modules     |
+| Resources    | 1.5 CPUs, 4 GB RAM, swap disabled, 5-minute command timeout                            |
 
-**Filesystem accessible inside the container:**
+### Data Guardian — how sanitization works
 
+Lighthouse acts as a MITM proxy and intercepts every JSON request body the AI tools send upstream. Before the payload reaches the provider, all matching secrets are replaced with `[REDACTED_BY_ALCATRAZ_*]` markers.
+
+**What is and isn't touched:**
+
+| Touched                                           | Not touched                                                    |
+| ------------------------------------------------- | -------------------------------------------------------------- |
+| JSON request bodies (`Content-Type: *json*`)      | Request/response headers — auth (`x-api-key`) is never broken  |
+| The prompt/conversation payload sent to the model | Provider responses                                             |
+| All proxied hosts                                 | Non-JSON bodies (npm/pip tarballs, binary downloads)           |
+
+**Categories covered (~90 patterns):**
+
+- API keys & tokens — OpenAI, Anthropic, Google, GitHub, Slack, Discord, AWS, Stripe, JWT
+- AI/LLM providers — Groq, Perplexity, Replicate, HuggingFace, OpenRouter, Cohere, Mistral
+- Cloud credentials — AWS (account/ARN/session), Azure (subscription/tenant/secret), GCP (service account/OAuth), Cloudflare, Firebase, DigitalOcean, Terraform, Kubernetes
+- PII (Brazil) — CPF, CNPJ, RG, phone, PIX, bank account
+- PII (global) — email, credit card, IP address, passport
+- Cryptographic keys — SSH, PGP/GPG private keys
+- Env vars — `*_SECRET`, `*_TOKEN`, `*_PASSWORD` patterns, SMTP/IMAP credentials
+- Git/CI/packages — GitHub (all token formats), GitLab, npm tokens, Docker, Atlassian
+- Email/SMS/monitoring — SendGrid, Mailgun, Twilio, Telegram, Sentry, New Relic
+
+**Adding a custom pattern:**
+
+Patterns are Go regexes (RE2) in [`platform/backend/internal/proxy/patterns.go`](platform/backend/internal/proxy/patterns.go):
+
+```go
+// Fixed prefix (high precision):
+{"my_service_key", re(`\bmysvc_[a-zA-Z0-9]{32}\b`), "[REDACTED_BY_ALCATRAZ_MYSVC]"},
+
+// Context-gated (for secrets without a unique shape):
+{"captcha_key", re(`(?i)(?:2captcha|capmonster)\s*[:=]\s*['"]?[a-zA-Z0-9]{20,}`), "[REDACTED_BY_ALCATRAZ_CAPTCHA]"},
 ```
-/workspace/      -> your project
-/tmp/            -> temporary (tmpfs)
-/dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/pts/
+
+Put specific rules above the generic catch-alls at the bottom of the file. Test before rebuilding:
+
+```bash
+cd platform/backend
+go test ./internal/proxy/
+go build ./internal/proxy/
 ```
 
----
+Then rebuild: `alcatraz run --rebuild`.
 
-## Customization
+### Customization
 
-### Increase resources
+**Increase resources** — edit `docker-compose.go.yml`:
 
 ```yaml
-# docker-compose.go.yml
-cpus: 2.0 # float - no quotes (required by Docker Compose V2)
-mem_limit: 4g
-memswap_limit: 4g
+cpus: 2.0       # float, no quotes
+mem_limit: 8g
+memswap_limit: 8g
 ```
 
-### Enable direct internet (no proxy)
-
-```yaml
-# docker-compose.go.yml
-networks:
-    isolated-network:
-        driver_opts:
-            com.docker.network.bridge.enable_ip_masquerade: "true"
-```
-
-### Add environment variables
+**Add environment variables:**
 
 ```yaml
 # docker-compose.go.yml
@@ -585,7 +328,7 @@ environment:
     - MY_VAR=value
 ```
 
-### Mount an extra volume (read-only)
+**Mount an extra volume (read-only):**
 
 ```yaml
 # docker-compose.go.yml
@@ -593,158 +336,58 @@ volumes:
     - /external/path:/workspace/data:ro
 ```
 
-### Install additional tools
+**Install additional tools** — add `RUN` steps to `Dockerfile.alcatraz`, then `alcatraz run --rebuild`.
 
-Add `RUN` steps to `Dockerfile.alcatraz` and run `./alcatraz.sh build`.
-
-### Add or remove Data Guardian patterns
-
-All sanitization rules are Go regexes (RE2 syntax) in
-[`platform/backend/internal/proxy/patterns.go`](platform/backend/internal/proxy/patterns.go),
-inside the `SensitivePatterns` slice. Each entry is a `{Name, Regex, Replacement}` triple:
-
-```go
-{"my_service_key", re(`\bmysvc_[a-zA-Z0-9]{32}\b`), "[REDACTED_BY_ALCATRAZ_MYSVC]"},
-```
-
-- **`Name`** — shows up in the audit log (`./alcatraz.sh logs guardian`), e.g. `my_service_key(2)`.
-- **`Regex`** — wrapped by the `re(...)` helper. RE2 has **no backreferences and no lookahead**.
-- **`Replacement`** — the marker that takes the secret's place in the payload.
-
-**Add a pattern** — two common styles:
-
-```go
-// 1. Fixed prefix (high precision, e.g. provider tokens):
-{"linear_key", re(`\blin_api_[A-Za-z0-9]{40,}\b`), "[REDACTED_BY_ALCATRAZ_LINEAR_KEY]"},
-
-// 2. Context-gated (for secrets with no unique shape — avoids false positives):
-{
-    "captcha_solver_key",
-    re(`(?i)(?:"|')?(?:2captcha|capmonster|capsolver)(?:"|')?\s*['"]?\s*[:=]\s*['"]?[a-zA-Z0-9]{20,}['"]?`),
-    "[REDACTED_BY_ALCATRAZ_CAPTCHA_KEY]",
-},
-```
-
-> **Ordering matters.** Patterns run top-to-bottom and each replaces independently, so put
-> **specific** rules above the generic catch-alls (`generic_secret`, `email_estrito`) near the
-> end of the file. Once a specific rule redacts a token, the generic ones can't re-match it.
-> Prefer context-gated rules for anything shorter than ~20 chars or without a unique prefix —
-> a bare `[a-f0-9]{32}` will redact ordinary hashes/IDs in your prompts.
-
-**Remove (or loosen) a pattern** — delete its line, or comment it out. If a rule is
-over-matching legitimate content, tighten it (add a prefix/context) instead of removing it.
-
-**Test your change** (the suite has real-world fixtures and false-positive guards):
+### Verify isolation
 
 ```bash
-cd platform/backend
-go test ./internal/proxy/        # unit + real-world sanitizer tests
-go build ./internal/proxy/       # confirm the regex compiles
+alcatraz shell
+# Inside the container:
+curl https://example.com    # fails — domain not whitelisted
+ping 8.8.8.8                # Network unreachable
+whoami                      # alcatraz_runner
+id                          # uid=1000
+
+# Or run the full automated suite:
+exit
+alcatraz test-security
 ```
 
-A bad regex panics at startup via `regexp.MustCompile`, so a passing `go build`/`go test`
-means it's valid. Rebuild the stack to apply: `./alcatraz.sh build`.
+### Troubleshooting
 
-### Share the jail across projects
+**`'cpus' expected type 'float32', got unconvertible type 'string'`** — you're running Docker Compose V1. Install V2: `sudo apt-get install -y docker-compose-plugin`.
 
-Use favorite workspaces to switch quickly without typing full paths:
+**`invalid service "alcatraz". Must specify either image or build`** — image was built with an old compose version. Fix: `docker tag alcatraz-alcatraz:latest alcatraz:latest && alcatraz run`.
 
-```bash
-# Save each project as a favorite
-./alcatraz.sh save tetris ~/projects/tetris
-./alcatraz.sh save api   ~/projects/my-api
+**"Cannot connect to Docker daemon"** — `sudo usermod -aG docker $USER && newgrp docker`.
 
-# Switch with a short command
-./alcatraz.sh run tetris
-# ... work ...
-./alcatraz.sh stop
+**Container won't start** — `alcatraz logs`, then `alcatraz clean && alcatraz run`.
 
-./alcatraz.sh run api
-# ... work ...
-```
+**Command exceeds timeout** — `TIMEOUT_SECONDS=900 alcatraz exec 'long-command'`.
 
-Or, without favorites, pass the path directly to `run`:
-
-```bash
-./alcatraz.sh run /path/to/another/project
-```
+**Memory limit exceeded** — increase `mem_limit` in `docker-compose.go.yml`.
 
 ---
 
-## Troubleshooting
+## Contributing
 
-### `'cpus' expected type 'float32', got unconvertible type 'string'`
+Contributions are welcome. The project is deliberately focused — it's a sandbox for AI tools, not a general-purpose container framework — so the best contributions stay within that scope.
 
-You're using Docker Compose V1 (standalone) with Docker Engine 25+. Migrate to V2:
+**Good areas to contribute:**
 
-```bash
-sudo apt-get install -y docker-compose-plugin
-# Verify: docker compose version
-```
+- New Data Guardian patterns for secrets that aren't yet covered
+- Support for additional AI tools (new CLI agents, new model providers)
+- Improvements to Mega Brain (new memory types, better hook integration, new model support)
+- Security hardening (tighter seccomp profiles, additional capability drops, network rules)
+- Bug fixes and reliability improvements
 
-If you can't migrate, remove the quotes from `cpus` in `docker-compose.go.yml`:
+**To add support for a new AI model in Mega Brain**, see `mega-brain/ADDING-NEW-MODEL.md` — the process is documented and designed to be straightforward.
 
-```yaml
-cpus: 1.5 # correct - no quotes
-```
+**To contribute:**
 
-### `invalid service "alcatraz". Must specify either image or build`
+1. Fork the repo and create a branch from `main`
+2. Make your change with a clear commit message
+3. If you're adding or modifying Data Guardian patterns, include test cases in `platform/backend/internal/proxy/`
+4. Open a pull request describing what the change does and why
 
-Happens when `docker compose up --no-build` can't find an explicit `image:` in the service. A common cause is building the image with an old compose version that auto-names it `<project>_<service>`. To fix without rebuilding:
-
-```bash
-docker tag alcatraz-alcatraz:latest alcatraz:latest
-./alcatraz.sh run
-```
-
-### "Cannot connect to Docker daemon" / "Permission denied"
-
-```bash
-sudo usermod -aG docker $USER
-newgrp docker
-# Or use sudo ./alcatraz.sh run
-```
-
-### Container won't start
-
-```bash
-./alcatraz.sh logs          # See the error
-./alcatraz.sh clean
-./alcatraz.sh build
-./alcatraz.sh run
-```
-
-### Command exceeds the timeout
-
-```bash
-TIMEOUT_SECONDS=900 ./alcatraz.sh exec 'long-command'
-```
-
-### Memory limit exceeded
-
-Increase `mem_limit` and `memswap_limit` in `docker-compose.go.yml` (see [Customization](#customization)).
-
-### Project files don't show up in the container
-
-```bash
-ls -la project/            # Check there's content
-./alcatraz.sh clean
-./alcatraz.sh run
-```
-
-### Verify isolation manually
-
-```bash
-./alcatraz.sh shell
-# Inside the container:
-$ curl https://example.com      # should fail (domain not whitelisted)
-$ ping 8.8.8.8                  # Network unreachable
-$ whoami                        # alcatraz_runner (not root)
-$ id                            # uid=1000
-```
-
-Or run the full suite:
-
-```bash
-./test-security.sh
-```
+There's no formal style guide — follow the conventions in the files you're editing.
