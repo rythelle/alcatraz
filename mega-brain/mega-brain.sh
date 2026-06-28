@@ -13,11 +13,35 @@ GROUP_PREFIX="${MEGABRAIN_GROUP_PREFIX:-}"
 GROUP_DIR="${MEGABRAIN_GROUP_DIR:-}"
 
 detect_project() {
-    local root
+    local root name
     root=$(git -C /workspace rev-parse --show-toplevel 2>/dev/null) || root=""
-    if [ -n "$root" ]; then basename "$root"
-    else basename /workspace
+    if [ -n "$root" ]; then
+        name=$(basename "$root")
+        # When a project is mounted at /workspace, git reports /workspace as the
+        # toplevel, so basename is just "workspace". Prefer the real project name
+        # passed from the host, or fall back to the git remote repo name.
+        if [ "$name" = "workspace" ]; then
+            if [ -n "${ALCATRAZ_PROJECT_NAME:-}" ]; then
+                name="$ALCATRAZ_PROJECT_NAME"
+            else
+                local remote
+                remote=$(git -C /workspace config --get remote.origin.url 2>/dev/null || true)
+                if [ -n "$remote" ]; then
+                    name=$(basename "$remote" .git)
+                fi
+            fi
+        fi
+        echo "$name"
+        return
     fi
+
+    # Not a git repository: use the host-provided project name if available.
+    if [ -n "${ALCATRAZ_PROJECT_NAME:-}" ]; then
+        echo "$ALCATRAZ_PROJECT_NAME"
+        return
+    fi
+
+    basename /workspace
 }
 
 get_context_path() {
