@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 CLI_DIR="$SCRIPT_DIR/platform/cli"
 CLI_BIN="$CLI_DIR/alcatraz-cli"
 
@@ -17,7 +17,7 @@ if [ ! -f "$CLI_BIN" ] || [ "$CLI_DIR/main.go" -nt "$CLI_BIN" ]; then
 fi
 
 # Run the CLI
-"$CLI_BIN" "$@"
+ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" "$@"
 
 # ── Post-TUI actions ──
 # If the TUI wrote a next-action file, execute it now.
@@ -32,14 +32,14 @@ if [ -f "$NEXT_ACTION_FILE" ]; then
             echo ""
             echo "Starting Alcatraz with project: $TARGET"
             # Ensure container is running with the right workspace
-            ALCATRAZ_WORKSPACE="$TARGET" "$CLI_BIN" run "$TARGET" >/dev/null 2>&1 || true
+            ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" run "$TARGET" >/dev/null 2>&1 || true
             echo "Opening shell..."
-            "$CLI_BIN" shell
+            ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" shell
             ;;
         run)
             echo ""
             echo "Starting Alcatraz with project: $TARGET"
-            "$CLI_BIN" run "$TARGET"
+            ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" run "$TARGET"
             ;;
     esac
 fi

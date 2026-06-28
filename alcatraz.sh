@@ -12,7 +12,7 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"  # 5 min default
 MAX_FILE_SIZE_MB=1000
 
 # Directory of alcatraz.sh (base for the default path)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # State file persisting ALCATRAZ_WORKSPACE between invocations
 STATE_FILE="$SCRIPT_DIR/.alcatraz-state"
