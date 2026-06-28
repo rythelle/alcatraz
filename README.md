@@ -8,7 +8,7 @@
 
 # Alcatraz — Isolated Sandbox for AI Tools
 
-Docker-based isolation to run AI coding agents — **Claude Code, Gemini CLI, OpenAI Codex, and opencode** — safely from the terminal. You can point Alcatraz at any project in three ways: drop your code in `./project/` (the default folder), pass a path directly (`alcatraz run ~/projects/my-app`), or save named aliases and switch with a short command (`alcatraz save myapp ~/projects/my-app` → `alcatraz run myapp`). After the first run, the last used project is remembered automatically — just `alcatraz run` brings it back. Whichever way you choose, the project is mounted as `/workspace` inside the container. All outbound traffic goes through a Go MITM proxy that scrubs sensitive data before it reaches any AI provider, then through a Squid proxy that enforces a domain whitelist. Includes **Mega Brain**: persistent, per-project memory that auto-loads and auto-saves across sessions and models.
+Docker-based isolation to run AI coding agents — **Claude Code, Gemini CLI, OpenAI Codex, and opencode** — safely from the terminal. You can point Alcatraz at any project in three ways: drop your code in `./project/` (the default folder), pass a path directly (`alcatraz run ~/projects/my-app`), or save named aliases and switch with a short command (`alcatraz save myapp ~/projects/my-app` → `alcatraz run myapp`). After the first run, the last used project is remembered automatically — just `alcatraz run` brings it back. Projects are always mounted at `/workspace/projects/<folder-name>` inside the container, so every project has its own named path regardless of how it was started. Additional projects from `PROJECT_PATHS` are mounted alongside it under the same directory. All outbound traffic goes through a Go MITM proxy that scrubs sensitive data before it reaches any AI provider, then through a Squid proxy that enforces a domain whitelist. Includes **Mega Brain**: persistent, per-project memory that auto-loads and auto-saves across sessions and models.
 
 ---
 
@@ -133,8 +133,10 @@ alcatraz shell
 claude        # opens browser for OAuth (Claude Code)
 gemini auth   # interactive auth flow (Gemini CLI)
 exit
-# Credentials are now stored in named volumes — no repeat needed
+# Credentials persist across stop/run — no repeat needed
 ```
+
+> **Note:** Run `alcatraz clean && alcatraz run <project>` once after installing or updating to create the home directory volume. After that, OAuth credentials survive `alcatraz stop`.
 
 **API keys (OpenAI, opencode):**
 
@@ -181,7 +183,7 @@ All commands go through `alcatraz`. The older `./alcatraz.sh` script still works
 
 ```bash
 alcatraz                          # Interactive TUI
-alcatraz run [PATH|ALIAS]         # Start sandbox, mount PATH or saved alias
+alcatraz run [PATH|ALIAS]         # Start sandbox, mount PATH or saved alias (auto-saves as favorite)
 alcatraz run --rebuild            # Start with a forced image rebuild
 alcatraz shell [PATH|ALIAS]       # Open an interactive shell (starts if needed)
 alcatraz exec 'COMMAND'           # Run a one-off command in the container
@@ -208,18 +210,22 @@ alcatraz stop
 alcatraz run web    # mounts ~/projects/my-web
 ```
 
-**`PROJECT_PATHS`** — set in `.env` to make `alcatraz list` auto-detect projects from comma-separated directories, and to mount them all at `/workspace/projects/<folder-name>` inside the container:
+**`PROJECT_PATHS`** — set in `.env` to mount extra projects alongside the active one. All projects — the one started with `alcatraz run` and every path in `PROJECT_PATHS` — appear at `/workspace/projects/<folder-name>` inside the container:
 
 ```bash
 # .env
 PROJECT_PATHS=/home/you/projects/api,/home/you/projects/web
+# Inside the container:
+#   /workspace/projects/my-app   ← active project (from alcatraz run)
+#   /workspace/projects/api      ← from PROJECT_PATHS
+#   /workspace/projects/web      ← from PROJECT_PATHS
 ```
 
 **What persists across `stop`/`run` cycles:**
 
 | Data                        | Persists | Storage                          |
 | --------------------------- | -------- | -------------------------------- |
-| Your project files          | Yes      | Host bind mount (`/workspace`)   |
+| Your project files          | Yes      | Host bind mount (`/workspace/projects/<name>`) |
 | Claude / opencode auth      | Yes      | Named volumes                    |
 | npm / pip caches            | Yes      | Named volumes                    |
 | Mega Brain memory           | Yes      | Host path (`AI_CONTEXT_PATH`)    |
@@ -240,7 +246,8 @@ Host
       ├── alcatraz-backend   (Go binary)
       │    └── :8080  Lighthouse — MITM proxy + Data Guardian
       └── alcatraz           (sandbox container)
-           ├── /workspace    <- your project, rw
+           ├── /workspace/projects/<name>   <- active project, rw
+           ├── /workspace/projects/<name>   <- PROJECT_PATHS entries, rw
            └── http_proxy -> alcatraz-backend:8080
 ```
 
