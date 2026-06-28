@@ -139,10 +139,17 @@ func runCmd() *cobra.Command {
 			}
 
 			absPath, _ := filepath.Abs(path)
+			prevWorkspace := state.GetWorkspace()
 			state.SetWorkspace(absPath)
+			os.Setenv("ALCATRAZ_WORKSPACE", absPath)
 			docker.EnsureContextDir(projectRoot)
 
-			if compose.IsRunning("alcatraz") {
+			if compose.IsRunning("alcatraz") && !rebuild {
+				if prevWorkspace == absPath {
+					fmt.Println("✓ Alcatraz is already running with this project")
+					fmt.Printf("  Project: %s -> /workspace\n", absPath)
+					return nil
+				}
 				fmt.Println("Stopping current container to remount...")
 				compose.Down(false).Run()
 			}
@@ -303,6 +310,7 @@ func shellCmd() *cobra.Command {
 				}
 				absPath, _ := filepath.Abs(path)
 				state.SetWorkspace(absPath)
+				os.Setenv("ALCATRAZ_WORKSPACE", absPath)
 				docker.EnsureContextDir(projectRoot)
 
 				if compose.IsRunning("alcatraz") {
