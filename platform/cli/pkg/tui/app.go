@@ -373,8 +373,15 @@ func (a *App) runDirectCommand() tea.Cmd {
 	return nil
 }
 
-// ResolveProjectRoot finds the alcatraz project root from current directory.
+// ResolveProjectRoot finds the alcatraz project root.
+// Priority: ALCATRAZ_ROOT env var (set by the wrapper script) → walk up from cwd.
 func ResolveProjectRoot() string {
+	if root := os.Getenv("ALCATRAZ_ROOT"); root != "" {
+		if _, err := os.Stat(filepath.Join(root, "docker-compose.go.yml")); err == nil {
+			return root
+		}
+	}
+
 	dir, _ := os.Getwd()
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "docker-compose.go.yml")); err == nil {
@@ -386,6 +393,8 @@ func ResolveProjectRoot() string {
 		}
 		dir = parent
 	}
+
+	dir, _ = os.Getwd()
 	return dir
 }
 
