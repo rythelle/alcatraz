@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/alcatraz/alcatraz/cli/internal/config"
@@ -289,8 +290,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case CmdDoneMsg:
 		a.Loading = false
 		if msg.Err != nil {
-			a.StatusError = msg.Err
 			a.OutputText = fmt.Sprintf("Error: %v", msg.Err)
+		} else {
+			a.Screen = ScreenDashboard
+			return a, a.refreshWorkspaces()
 		}
 		return a, tea.Batch(cmds...)
 
@@ -364,8 +367,11 @@ func (a *App) runCmd(cmd *exec.Cmd, title string) tea.Cmd {
 	a.LoadingText = title
 
 	return func() tea.Msg {
-		out, _ := cmd.CombinedOutput()
-		return CmdOutputMsg{Output: string(out)}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return CmdDoneMsg{Err: fmt.Errorf("%s\n%s", err, strings.TrimSpace(string(out)))}
+		}
+		return CmdDoneMsg{Err: nil}
 	}
 }
 
