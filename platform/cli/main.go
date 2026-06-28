@@ -144,6 +144,13 @@ func runCmd() *cobra.Command {
 			os.Setenv("ALCATRAZ_WORKSPACE", absPath)
 			docker.EnsureContextDir(projectRoot)
 
+			if len(args) > 0 {
+				name := filepath.Base(absPath)
+				if ws, _ := wsMgr.Load(); ws[name] == "" {
+					_ = wsMgr.Save(name, absPath)
+				}
+			}
+
 			if compose.IsRunning("alcatraz") && !rebuild {
 				if prevWorkspace == absPath {
 					fmt.Println("✓ Alcatraz is already running with this project")

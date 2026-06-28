@@ -439,6 +439,11 @@ func (a *App) doRun(path string) tea.Cmd {
 	os.Setenv("ALCATRAZ_WORKSPACE", absPath)
 	docker.EnsureContextDir(a.ProjectRoot)
 
+	name := filepath.Base(absPath)
+	if ws, _ := a.WorkspaceMgr.Load(); ws[name] == "" {
+		_ = a.WorkspaceMgr.Save(name, absPath)
+	}
+
 	if a.Compose.IsRunning("alcatraz") {
 		if prevWorkspace == absPath {
 			a.Screen = ScreenDashboard
