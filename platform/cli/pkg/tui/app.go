@@ -145,15 +145,15 @@ func NewApp(projectRoot string, directMode bool, directArgs []string) (*App, err
 	sp.Style = lipgloss.NewStyle().Foreground(Primary)
 
 	menu := []MenuItem{
-		{Title: "Run Project", Desc: "Start sandbox with a project mounted", Screen: ScreenRun, Icon: "▶", NeedsDocker: true},
-		{Title: "Execute Command", Desc: "Run a command inside the container", Screen: ScreenExec, Icon: "⚡", NeedsDocker: true},
-		{Title: "Open Shell", Desc: "Interactive shell in the container", Screen: ScreenOutput, Icon: "🐚", NeedsDocker: true},
-		{Title: "Workspaces", Desc: "Manage favorite workspaces", Screen: ScreenWorkspaces, Icon: "📁", NeedsDocker: false},
-		{Title: "Status", Desc: "View container and mount status", Screen: ScreenStatus, Icon: "ℹ", NeedsDocker: true},
-		{Title: "Logs", Desc: "Tail logs from services", Screen: ScreenLogs, Icon: "📋", NeedsDocker: true},
+		{Title: "Run Project", Desc: "Mount a project and start containers (restarts if project changes)", Screen: ScreenRun, Icon: "▶", NeedsDocker: true},
+		{Title: "Execute Command", Desc: "Run a one-off command inside the running container", Screen: ScreenExec, Icon: "⚡", NeedsDocker: true},
+		{Title: "Open Shell", Desc: "Interactive shell — starts containers automatically if needed", Screen: ScreenOutput, Icon: "🐚", NeedsDocker: true},
+		{Title: "Workspaces", Desc: "Switch projects without restarting containers  (s = open shell)", Screen: ScreenWorkspaces, Icon: "📁", NeedsDocker: false},
+		{Title: "Status", Desc: "Container status, active workspace and mounted volumes", Screen: ScreenStatus, Icon: "ℹ", NeedsDocker: false},
+		{Title: "Logs", Desc: "View last 200 lines of logs per service", Screen: ScreenLogs, Icon: "📋", NeedsDocker: true},
 		{Title: "Run Tests", Desc: "Guardian & security test suites", Screen: ScreenTests, Icon: "🧪", NeedsDocker: true},
-		{Title: "Stop", Desc: "Stop all containers", Screen: ScreenConfirm, Icon: "⏹", NeedsDocker: true},
-		{Title: "Clean", Desc: "Stop and remove everything", Screen: ScreenConfirm, Icon: "🗑", NeedsDocker: true},
+		{Title: "Stop", Desc: "Stop all containers (data is preserved)", Screen: ScreenConfirm, Icon: "⏹", NeedsDocker: true},
+		{Title: "Clean", Desc: "Stop containers and remove all volumes (destructive)", Screen: ScreenConfirm, Icon: "🗑", NeedsDocker: true},
 		{Title: "Quit", Desc: "Exit Alcatraz CLI", Screen: ScreenDashboard, Icon: "👋", NeedsDocker: false},
 	}
 

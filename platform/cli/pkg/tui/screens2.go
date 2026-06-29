@@ -90,7 +90,7 @@ func (a *App) handleWorkspacesKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 func (a *App) viewWorkspaces() string {
 	title := a.Styles.Title.Render("📁  Workspaces")
-	hint := a.Styles.Hint.Render("  enter=run  s=run+shell  d=delete  ↑/↓=navigate")
+	hint := a.Styles.Hint.Render("  ↑/↓ navigate  •  s open shell  •  enter go to Run Project  •  d delete  •  n add alias")
 
 	entries := a.workspaceEntries()
 	var items []string
@@ -98,7 +98,8 @@ func (a *App) viewWorkspaces() string {
 	if len(entries) == 0 {
 		items = append(items, "  No workspaces found.")
 		items = append(items, "")
-		items = append(items, fmt.Sprintf("  Press %s to save the current project", a.Styles.Key.Render("n")))
+		items = append(items, fmt.Sprintf("  Press %s to save an alias for the current project", a.Styles.Key.Render("n")))
+		items = append(items, fmt.Sprintf("  Or add paths to %s in your .env file", a.Styles.Key.Render("PROJECT_PATHS")))
 	} else {
 		// Favorites section
 		if len(a.WorkspaceList) > 0 {
@@ -127,6 +128,17 @@ func (a *App) viewWorkspaces() string {
 		}
 	}
 
+	// Key reference panel
+	keyRef := []string{
+		"",
+		a.Styles.PanelTitle.Render("  Key reference"),
+		fmt.Sprintf("  %s  open shell in this project — no restart if containers are already running", a.Styles.Key.Render("s")),
+		fmt.Sprintf("  %s  pre-fill Run Project with this path (will restart containers if project changes)", a.Styles.Key.Render("enter")),
+		fmt.Sprintf("  %s  delete saved alias (auto-detected entries cannot be deleted)", a.Styles.Key.Render("d")),
+		"",
+		a.Styles.Hint.Render("  Tip: add paths to PROJECT_PATHS in .env to auto-mount multiple projects at startup."),
+	}
+
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		"",
@@ -134,6 +146,7 @@ func (a *App) viewWorkspaces() string {
 		hint,
 		"",
 		lipgloss.JoinVertical(lipgloss.Left, items...),
+		lipgloss.JoinVertical(lipgloss.Left, keyRef...),
 	)
 }
 
@@ -159,9 +172,9 @@ func (a *App) viewStatus() string {
 		Name string
 		Desc string
 	}{
-		{"alcatraz", "Sandbox container"},
+		{"alcatraz", "Sandbox (claude, gemini, codex)"},
 		{"alcatraz-backend", "Data Guardian (MITM proxy)"},
-		{"proxy-whitelist", "Squid proxy"},
+		{"proxy-whitelist", "Squid proxy (domain whitelist)"},
 	}
 
 	for _, svc := range services {
@@ -169,16 +182,36 @@ func (a *App) viewStatus() string {
 		if a.Compose.IsRunning(svc.Name) {
 			status = a.Styles.StatusOK.Render("● running")
 		}
-		lines = append(lines, fmt.Sprintf("  %-22s %s  %s", svc.Desc, status, a.Styles.Hint.Render(svc.Name)))
+		lines = append(lines, fmt.Sprintf("  %-34s %s  %s", svc.Desc, status, a.Styles.Hint.Render(svc.Name)))
 	}
 
 	lines = append(lines, "")
 	ws := a.State.GetWorkspace()
-	lines = append(lines, fmt.Sprintf("  %s  %s", a.Styles.Key.Render("Workspace:"), ws))
-	lines = append(lines, fmt.Sprintf("  %s  %s", a.Styles.Key.Render("Mount:"), ws+" → /workspace"))
+	if ws == "" {
+		ws = "(none)"
+	}
+	lines = append(lines, fmt.Sprintf("  %s  %s", a.Styles.Key.Render("Active workspace:"), ws))
+	if ws != "(none)" {
+		lines = append(lines, fmt.Sprintf("  %s  %s → %s",
+			a.Styles.Key.Render("Container path:"),
+			a.Styles.Hint.Render(ws),
+			a.Styles.Key.Render("/workspace/projects/"+filepath.Base(ws))))
+	}
+
+	// Mounted volumes from PROJECT_PATHS
+	extra := a.DetectedProjects
+	if len(extra) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %s", a.Styles.Key.Render("PROJECT_PATHS mounts:")))
+		for _, p := range extra {
+			lines = append(lines, fmt.Sprintf("    %s → %s",
+				a.Styles.Hint.Render(p),
+				a.Styles.Key.Render("/workspace/projects/"+filepath.Base(p))))
+		}
+	}
 
 	lines = append(lines, "")
-	lines = append(lines, a.Styles.Hint.Render("  Use 'Resources' from the main menu for live stats"))
+	lines = append(lines, a.Styles.Hint.Render("  Tip: paths in PROJECT_PATHS are mounted at startup — open multiple projects with s without restarting."))
 
 	panel := a.Styles.Panel.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 

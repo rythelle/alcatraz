@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -103,13 +104,34 @@ func (a *App) viewDashboard() string {
 	}
 
 	items = append(items, "")
-	status := a.Styles.Hint.Render("  Docker: ")
+
+	// Status bar
+	dockerStatus := a.Styles.Hint.Render("  Docker: ")
 	if a.Compose != nil {
-		status += a.Styles.Success.Render("✓ " + a.Compose.DC)
+		dockerStatus += a.Styles.Success.Render("✓ " + a.Compose.DC)
 	} else {
-		status += a.Styles.Error.Render("✗ not found")
+		dockerStatus += a.Styles.Error.Render("✗ not found")
 	}
-	items = append(items, status)
+
+	containerStatus := ""
+	if a.Compose != nil {
+		if a.Compose.IsRunning("alcatraz") {
+			containerStatus = "  " + a.Styles.StatusOK.Render("● containers running")
+		} else {
+			containerStatus = "  " + a.Styles.StatusError.Render("● containers stopped")
+		}
+	}
+
+	ws := a.State.GetWorkspace()
+	wsStatus := ""
+	if ws != "" {
+		wsStatus = fmt.Sprintf("  %s %s", a.Styles.Hint.Render("workspace:"), a.Styles.Key.Render(ws))
+	}
+
+	items = append(items, dockerStatus+containerStatus)
+	if wsStatus != "" {
+		items = append(items, wsStatus)
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, items...)
 }
@@ -131,16 +153,20 @@ func (a *App) handleRunKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 func (a *App) viewRun() string {
 	title := a.Styles.Title.Render("▶  Run Project")
-	hint := a.Styles.Hint.Render("  Enter a path, saved alias, or leave empty for ./project")
+	hint := a.Styles.Hint.Render("  Enter an absolute path, saved alias, or leave empty for ./project")
 
 	var wsHints []string
 	if len(a.WorkspaceList) > 0 {
-		wsHints = append(wsHints, "  Saved workspaces:")
+		wsHints = append(wsHints, "  Saved aliases:")
 		for _, name := range a.WorkspaceList {
 			path := a.Workspaces[name]
 			wsHints = append(wsHints, fmt.Sprintf("    • %s → %s", a.Styles.Key.Render(name), a.Styles.Hint.Render(path)))
 		}
+		wsHints = append(wsHints, "")
 	}
+
+	warning := a.Styles.StatusWarn.Render("  ⚠  If the project changes, containers will restart and active shell sessions will close.")
+	tip := a.Styles.Hint.Render("  Tip: to open a second project without restarting, add it to PROJECT_PATHS in .env and use Workspaces → s")
 
 	input := a.Styles.Input.Render(a.PathInput.View())
 	if a.PathInput.Focused() {
@@ -156,6 +182,8 @@ func (a *App) viewRun() string {
 		input,
 		"",
 		lipgloss.JoinVertical(lipgloss.Left, wsHints...),
+		warning,
+		tip,
 	)
 }
 
@@ -176,7 +204,15 @@ func (a *App) handleExecKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 func (a *App) viewExec() string {
 	title := a.Styles.Title.Render("⚡  Execute Command")
-	hint := a.Styles.Hint.Render("  Type a command to run inside the Alcatraz container")
+	hint := a.Styles.Hint.Render("  Runs a one-off command inside the container and shows the output here")
+
+	ws := a.State.GetWorkspace()
+	var contextLine string
+	if ws != "" {
+		contextLine = fmt.Sprintf("  %s %s  %s /workspace/projects/%s",
+			a.Styles.Hint.Render("workspace:"), a.Styles.Key.Render(ws),
+			a.Styles.Hint.Render("→"), filepath.Base(ws))
+	}
 
 	input := a.Styles.Input.Render(a.CommandInput.View())
 	if a.CommandInput.Focused() {
@@ -184,21 +220,22 @@ func (a *App) viewExec() string {
 	}
 
 	examples := []string{
+		"",
 		"  Examples:",
 		fmt.Sprintf("    %s  %s", a.Styles.Key.Render("•"), a.Styles.Hint.Render("npm install")),
 		fmt.Sprintf("    %s  %s", a.Styles.Key.Render("•"), a.Styles.Hint.Render("claude \"refactor src/index.ts\"")),
 		fmt.Sprintf("    %s  %s", a.Styles.Key.Render("•"), a.Styles.Hint.Render("pytest tests/")),
+		"",
+		a.Styles.Hint.Render("  Note: for interactive commands use Open Shell instead."),
 	}
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		"",
-		title,
-		hint,
-		"",
-		input,
-		"",
-		lipgloss.JoinVertical(lipgloss.Left, examples...),
-	)
+	lines := []string{"", title, hint}
+	if contextLine != "" {
+		lines = append(lines, contextLine)
+	}
+	lines = append(lines, "", input)
+	lines = append(lines, examples...)
+
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
