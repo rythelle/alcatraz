@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/alcatraz/alcatraz/cli/internal/config"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -81,8 +80,8 @@ func (a *App) handleWorkspacesKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 	case "s":
 		if len(entries) > 0 && a.WSCursor < len(entries) {
 			entry := entries[a.WSCursor]
-			config.WriteNextAction(a.ProjectRoot, "shell", entry.Path)
-			return true, tea.Quit
+			a.State.SetWorkspace(entry.Path)
+			return true, a.ensureRunning(a.doShellQuit(entry.Path))
 		}
 		return true, nil
 	}
@@ -212,7 +211,10 @@ var logServices = []logService{
 func (a *App) handleLogsKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 	for _, svc := range logServices {
 		if msg.String() == svc.Key {
-			return true, a.fetchLogs(svc.Svc, svc.Name)
+			svcCopy := svc
+			return true, a.ensureRunning(func() tea.Cmd {
+				return a.fetchLogs(svcCopy.Svc, svcCopy.Name)
+			})
 		}
 	}
 	return false, nil

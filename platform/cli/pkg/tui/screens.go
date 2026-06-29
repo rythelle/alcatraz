@@ -2,9 +2,7 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
-	"github.com/alcatraz/alcatraz/cli/internal/config"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -50,8 +48,8 @@ func (a *App) handleDashboardKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 			return false, nil
 		}
 		if item.Title == "Open Shell" {
-			a.showShellInstructions()
-			return true, nil
+			ws := a.State.GetWorkspace()
+			return true, a.ensureRunning(a.doShellQuit(ws))
 		}
 		if item.Title == "Stop" {
 			a.ConfirmTitle = "Stop Containers"
@@ -166,9 +164,11 @@ func (a *App) viewRun() string {
 func (a *App) handleExecKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		cmd := a.CommandInput.Value()
-		if cmd != "" {
-			return true, a.doExec(cmd)
+		cmdStr := a.CommandInput.Value()
+		if cmdStr != "" {
+			return true, a.ensureRunning(func() tea.Cmd {
+				return a.doExec(cmdStr)
+			})
 		}
 	}
 	return false, nil
@@ -202,32 +202,3 @@ func (a *App) viewExec() string {
 	)
 }
 
-// ── Shell instructions ──
-
-func (a *App) showShellInstructions() {
-	a.Screen = ScreenOutput
-	a.OutputTitle = "🐚  Interactive Shell"
-
-	envArgs := config.CollectAPIEnvArgs()
-	var envFlags []string
-	for _, e := range envArgs {
-		envFlags = append(envFlags, fmt.Sprintf("-e %s", e))
-	}
-
-	cmdLine := fmt.Sprintf("docker compose -f docker-compose.go.yml exec %s alcatraz bash",
-		strings.Join(envFlags, " "))
-
-	a.OutputText = fmt.Sprintf(`The interactive shell cannot run inside the TUI because both
-need control of the terminal.
-
-Run this command in your regular terminal instead:
-
-  %s
-
-Or use the CLI directly:
-
-  ./alcatraz shell
-
-Press ESC to return to the menu.
-`, a.Styles.Key.Render(cmdLine))
-}

@@ -45,6 +45,8 @@ type (
 		Output  string
 		Err     error
 	}
+	ContainersReadyMsg struct{}
+	ShellQuitMsg       struct{}
 )
 
 // MenuItem represents a dashboard menu entry.
@@ -89,11 +91,12 @@ type App struct {
 	ConfirmCursor int
 
 	// Output
-	OutputTitle   string
-	OutputText    string
-	OutputCmd     *exec.Cmd
-	LogsActive    bool   // true when output screen is showing logs
-	LogsService   string // docker compose service key being viewed ("" = all, "__all__" sentinel unused)
+	OutputTitle      string
+	OutputText       string
+	OutputCmd        *exec.Cmd
+	LogsActive       bool         // true when output screen is showing logs
+	LogsService      string       // docker compose service key being viewed
+	PendingAfterStart func() tea.Cmd // action to run after containers are up
 
 	// Spinner
 	Spinner     spinner.Model
@@ -224,6 +227,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.Screen = ScreenDashboard
 				a.StatusError = nil
 				a.Loading = false
+				a.PendingAfterStart = nil
 				return a, nil
 			}
 		}
@@ -294,8 +298,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, tea.Batch(cmds...)
 
+	case ContainersReadyMsg:
+		a.Loading = false
+		if a.PendingAfterStart != nil {
+			pending := a.PendingAfterStart
+			a.PendingAfterStart = nil
+			cmds = append(cmds, pending())
+		}
+		return a, tea.Batch(cmds...)
+
+	case ShellQuitMsg:
+		return a, tea.Quit
+
 	case CmdDoneMsg:
 		a.Loading = false
+		a.PendingAfterStart = nil
 		if msg.Err != nil {
 			a.OutputText = fmt.Sprintf("Error: %v", msg.Err)
 		} else {
@@ -487,6 +504,62 @@ func (a *App) doExec(cmdStr string) tea.Cmd {
 	envArgs := config.CollectAPIEnvArgs()
 	cmd := a.Compose.Exec("alcatraz", cmdStr, envArgs...)
 	return a.runCmd(cmd, fmt.Sprintf("exec: %s", cmdStr))
+}
+
+// ensureRunning verifica se os containers estão rodando e sobe se não estiverem,
+// executando `then` quando estiverem prontos.
+func (a *App) ensureRunning(then func() tea.Cmd) tea.Cmd {
+	if a.Compose.IsRunning("alcatraz") {
+		return then()
+	}
+
+	a.PendingAfterStart = then
+	a.OutputTitle = "⚡  Iniciando Alcatraz..."
+	a.OutputText = ""
+	a.Loading = true
+	a.LoadingText = "Subindo containers..."
+	a.Screen = ScreenOutput
+
+	ws := a.State.GetWorkspace()
+	projectRoot := a.ProjectRoot
+	extraPaths := config.LoadProjectPaths(a.ProjectRoot)
+	compose := a.Compose
+
+	return func() tea.Msg {
+		if ws == "" {
+			ws = filepath.Join(projectRoot, "project")
+		}
+		docker.EnsureContextDir(projectRoot)
+		if err := compose.GenerateOverride(ws, extraPaths); err != nil {
+			return CmdDoneMsg{Err: fmt.Errorf("falha ao configurar workspace: %v", err)}
+		}
+		imageExists := exec.Command("docker", "image", "inspect", "alcatraz:latest").Run() == nil
+		var cmd *exec.Cmd
+		if !imageExists {
+			cmd = compose.Up(false, true)
+		} else {
+			cmd = compose.Up(true, false)
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return CmdDoneMsg{Err: fmt.Errorf("falha ao subir containers:\n%s", strings.TrimSpace(string(out)))}
+		}
+		return ContainersReadyMsg{}
+	}
+}
+
+// doShellQuit grava o next-action para shell e sai do TUI. O wrapper script
+// abre o shell interativo depois que o TUI encerra.
+func (a *App) doShellQuit(path string) func() tea.Cmd {
+	return func() tea.Cmd {
+		return func() tea.Msg {
+			if path == "" {
+				path = filepath.Join(a.ProjectRoot, "project")
+			}
+			config.WriteNextAction(a.ProjectRoot, "shell", path)
+			return ShellQuitMsg{}
+		}
+	}
 }
 
 func (a *App) doTestGuardian() tea.Cmd {
