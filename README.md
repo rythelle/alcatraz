@@ -36,6 +36,7 @@ The result is a controlled environment where the agent can do its job — read y
 - [Credentials](#credentials)
 - [Mega Brain](#mega-brain)
 - [Commands](#commands)
+- [Configuration (.env)](#configuration-env)
 - [Technical reference](#technical-reference)
 - [Contributing](#contributing)
 
@@ -232,6 +233,33 @@ PROJECT_PATHS=/home/you/projects/api,/home/you/projects/web
 | `/tmp`, shell history       | No       | tmpfs — cleared on stop          |
 
 > `alcatraz clean` removes everything including named volumes. Use it only to fully reset state.
+
+---
+
+## Configuration (`.env`)
+
+Copy `.env.example` to `.env` and adjust as needed. Docker Compose reads `.env` automatically at startup.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `OPENAI_API_KEY` | — | API key for OpenAI / Codex. Injected into the container at runtime. |
+| `ANTHROPIC_API_KEY` | — | API key for opencode (Anthropic backend) or other tools that read this var. |
+| `GOOGLE_API_KEY` | — | API key for Google / Gemini (API key auth, alternative to OAuth). |
+| `AI_CONTEXT_PATH` | `./.ai-context` | Host path for Mega Brain memory vault. Point at an Obsidian or OneDrive folder to sync across machines. |
+| `PROJECT_PATHS` | — | Comma-separated list of extra project paths to mount alongside the active workspace. Each appears at `/workspace/projects/<folder-name>` inside the container. |
+| `NODE_VERSION` | `22.19` | Node.js version pre-installed in the container via NVM. Change before rebuilding (`alcatraz run --rebuild`). |
+| `MEGABRAIN_GROUP_PREFIX` | — | Optional. Repos whose name starts with this prefix are grouped into a vault subfolder. Set together with `MEGABRAIN_GROUP_DIR`. |
+| `MEGABRAIN_GROUP_DIR` | — | Vault subfolder name used when a repo matches `MEGABRAIN_GROUP_PREFIX`. Example: prefix `acme-`, dir `Acme` → `{vault}/Acme/acme-web`. |
+| `COMPOSE_PROJECT_NAME` | `alcatraz` | Docker Compose project name. Controls the container name prefix. Change only if running multiple Alcatraz instances. |
+
+**Example `.env`:**
+
+```bash
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+AI_CONTEXT_PATH=/mnt/c/Users/youruser/OneDrive/Documents/AIContext
+PROJECT_PATHS=/home/youruser/projects/api,/home/youruser/projects/shared-lib
+```
 
 ---
 
