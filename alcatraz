@@ -30,10 +30,10 @@ if [ -f "$NEXT_ACTION_FILE" ]; then
     case "$ACTION" in
         shell)
             echo ""
-            echo "Starting Alcatraz with project: $TARGET"
-            # Ensure container is running with the right workspace
-            ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" run "$TARGET" >/dev/null 2>&1 || true
-            echo "Opening shell..."
+            echo "Opening shell in: $TARGET"
+            # The TUI already started containers via ensureRunning and saved the
+            # workspace to state. Calling 'run' here with a different path would
+            # restart containers and kill any other active shell sessions.
             ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" shell
             ;;
         run)
