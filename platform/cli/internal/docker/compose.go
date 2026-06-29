@@ -129,10 +129,12 @@ func (c *Compose) ExecInteractive(service string, workdir string, envArgs ...str
 }
 
 // IsRunning checks if a service is running.
+// Handles both "running" (newer compose) and "Up" (older/alternate format).
 func (c *Compose) IsRunning(service string) bool {
 	cmd := c.PsService(service)
 	out, _ := cmd.Output()
-	return strings.Contains(string(out), "running")
+	s := strings.ToLower(string(out))
+	return strings.Contains(s, "running") || strings.Contains(s, " up ")
 }
 
 func (c *Compose) exec(args ...string) *exec.Cmd {
