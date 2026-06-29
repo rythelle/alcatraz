@@ -464,7 +464,7 @@ func logsCmd() *cobra.Command {
 					svc = args[0]
 				}
 			}
-			c := compose.Logs(svc, true)
+			c := compose.Logs(svc, true, 200)
 			c.Stdout = os.Stdout
 			c.Stderr = os.Stderr
 			fmt.Printf("Tailing logs for '%s' (Ctrl+C to exit)...\n\n", svc)

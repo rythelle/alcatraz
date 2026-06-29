@@ -195,38 +195,36 @@ func (a *App) viewStatus() string {
 
 // ── Logs ──
 
+type logService struct {
+	Key  string
+	Name string
+	Svc  string // docker compose service name, "" = all
+	Desc string
+}
+
+var logServices = []logService{
+	{"1", "Sandbox / Jail", "alcatraz", "Container principal (claude, gemini, mega-brain)"},
+	{"2", "Data Guardian", "alcatraz-backend", "MITM proxy + sanitizador de secrets"},
+	{"3", "Squid Proxy", "proxy-whitelist", "Whitelist de domínios"},
+	{"a", "Todos", "", "Todos os serviços juntos"},
+}
+
 func (a *App) handleLogsKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
-	switch msg.String() {
-	case "1":
-		a.showLogsInstructions("alcatraz")
-		return true, nil
-	case "2":
-		a.showLogsInstructions("alcatraz-backend")
-		return true, nil
-	case "3":
-		a.showLogsInstructions("proxy-whitelist")
-		return true, nil
+	for _, svc := range logServices {
+		if msg.String() == svc.Key {
+			return true, a.fetchLogs(svc.Svc, svc.Name)
+		}
 	}
 	return false, nil
 }
 
 func (a *App) viewLogs() string {
 	title := a.Styles.Title.Render("📋  Logs")
-	hint := a.Styles.Hint.Render("  Select a service to see the tail command")
-
-	services := []struct {
-		Key  string
-		Name string
-		Desc string
-	}{
-		{"1", "alcatraz", "Sandbox container (default)"},
-		{"2", "alcatraz-backend", "Data Guardian / MITM proxy"},
-		{"3", "proxy-whitelist", "Squid whitelist proxy"},
-	}
+	hint := a.Styles.Hint.Render("  Pressione a tecla — últimas 200 linhas — ESC volta, r atualiza")
 
 	var items []string
-	for _, svc := range services {
-		line := fmt.Sprintf("  [%s] %-20s %s", a.Styles.Key.Render(svc.Key), svc.Name, a.Styles.Hint.Render(svc.Desc))
+	for _, svc := range logServices {
+		line := fmt.Sprintf("  [%s] %-18s %s", a.Styles.Key.Render(svc.Key), svc.Name, a.Styles.Hint.Render(svc.Desc))
 		items = append(items, line)
 	}
 
@@ -242,25 +240,21 @@ func (a *App) viewLogs() string {
 	)
 }
 
-func (a *App) showLogsInstructions(service string) {
+func (a *App) fetchLogs(dockerSvc, displayName string) tea.Cmd {
+	a.OutputTitle = fmt.Sprintf("📋  Logs: %s", displayName)
+	a.OutputText = ""
+	a.Loading = true
+	a.LoadingText = fmt.Sprintf("Buscando logs de %s...", displayName)
 	a.Screen = ScreenOutput
-	a.OutputTitle = fmt.Sprintf("📋  Logs: %s", service)
 
-	cmdLine := fmt.Sprintf("docker compose -f docker-compose.go.yml logs -f %s", service)
-
-	a.OutputText = fmt.Sprintf(`Live log tailing cannot run inside the TUI because
-'docker compose logs -f' needs control of the terminal.
-
-Run this command in your regular terminal instead:
-
-  %s
-
-Or use the CLI directly:
-
-  ./alcatraz logs %s
-
-Press ESC to return to the menu.
-`, a.Styles.Key.Render(cmdLine), service)
+	return func() tea.Msg {
+		cmd := a.Compose.Logs(dockerSvc, false, 200)
+		out, err := cmd.CombinedOutput()
+		if err != nil && len(out) == 0 {
+			return LogsSnapshotMsg{Service: dockerSvc, Err: err}
+		}
+		return LogsSnapshotMsg{Service: dockerSvc, Output: string(out)}
+	}
 }
 
 // ── Tests ──
@@ -368,9 +362,23 @@ func (a *App) doClean() tea.Cmd {
 func (a *App) handleOutputKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		a.Screen = ScreenDashboard
 		a.Loading = false
+		if a.LogsActive {
+			a.LogsActive = false
+			a.Screen = ScreenLogs
+		} else {
+			a.Screen = ScreenDashboard
+		}
 		return true, nil
+	case "r":
+		if a.LogsActive {
+			for _, svc := range logServices {
+				if svc.Svc == a.LogsService {
+					return true, a.fetchLogs(svc.Svc, svc.Name)
+				}
+			}
+		}
+		return false, nil
 	}
 	return false, nil
 }
@@ -393,7 +401,13 @@ func (a *App) viewOutput() string {
 		content += a.Styles.LogOutput.Render(strings.Join(lines, "\n"))
 	}
 
-	footer := a.Styles.Hint.Render("  Press ESC to return to menu")
+	var footerText string
+	if a.LogsActive {
+		footerText = "  ESC volta para logs  •  r atualiza"
+	} else {
+		footerText = "  ESC volta para o menu"
+	}
+	footer := a.Styles.Hint.Render(footerText)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,

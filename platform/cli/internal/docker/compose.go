@@ -90,13 +90,18 @@ func (c *Compose) PsService(service string) *exec.Cmd {
 	return c.exec(args...)
 }
 
-// Logs tails logs for a service.
-func (c *Compose) Logs(service string, follow bool) *exec.Cmd {
+// Logs tails logs for a service. tail=0 means no limit; service="" means all services.
+func (c *Compose) Logs(service string, follow bool, tail int) *exec.Cmd {
 	args := append(c.Flags(), "logs")
 	if follow {
 		args = append(args, "-f")
 	}
-	args = append(args, service)
+	if tail > 0 {
+		args = append(args, fmt.Sprintf("--tail=%d", tail))
+	}
+	if service != "" {
+		args = append(args, service)
+	}
 	return c.exec(args...)
 }
 

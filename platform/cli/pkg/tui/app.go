@@ -35,11 +35,16 @@ const (
 
 // Msg types
 type (
-	TickMsg       time.Time
-	CmdDoneMsg    struct{ Err error }
-	CmdOutputMsg  struct{ Output string }
-	ContainerMsg  struct{ Running bool }
-	WorkspacesMsg struct{ List map[string]string }
+	TickMsg        time.Time
+	CmdDoneMsg     struct{ Err error }
+	CmdOutputMsg   struct{ Output string }
+	ContainerMsg   struct{ Running bool }
+	WorkspacesMsg  struct{ List map[string]string }
+	LogsSnapshotMsg struct {
+		Service string
+		Output  string
+		Err     error
+	}
 )
 
 // MenuItem represents a dashboard menu entry.
@@ -84,9 +89,11 @@ type App struct {
 	ConfirmCursor int
 
 	// Output
-	OutputTitle string
-	OutputText  string
-	OutputCmd   *exec.Cmd
+	OutputTitle   string
+	OutputText    string
+	OutputCmd     *exec.Cmd
+	LogsActive    bool   // true when output screen is showing logs
+	LogsService   string // docker compose service key being viewed ("" = all, "__all__" sentinel unused)
 
 	// Spinner
 	Spinner     spinner.Model
@@ -300,6 +307,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case CmdOutputMsg:
 		a.OutputText = msg.Output
 		a.Loading = false
+		return a, tea.Batch(cmds...)
+
+	case LogsSnapshotMsg:
+		a.Loading = false
+		a.LogsActive = true
+		a.LogsService = msg.Service
+		if msg.Err != nil {
+			a.OutputText = fmt.Sprintf("Error fetching logs: %v", msg.Err)
+		} else {
+			a.OutputText = msg.Output
+		}
+		a.Screen = ScreenOutput
 		return a, tea.Batch(cmds...)
 	}
 
