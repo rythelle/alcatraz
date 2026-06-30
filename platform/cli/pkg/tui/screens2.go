@@ -80,8 +80,12 @@ func (a *App) handleWorkspacesKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 	case "s":
 		if len(entries) > 0 && a.WSCursor < len(entries) {
 			entry := entries[a.WSCursor]
+			prevWs := a.State.GetWorkspace()
 			a.State.SetWorkspace(entry.Path)
-			return true, a.ensureRunning(a.doShellQuit(entry.Path))
+			// If containers are running with a different workspace, restart them
+			// so the newly selected workspace gets mounted before opening the shell.
+			needsRestart := prevWs != entry.Path
+			return true, a.ensureRunningImpl(a.doShellQuit(entry.Path), needsRestart)
 		}
 		return true, nil
 	}
@@ -132,7 +136,7 @@ func (a *App) viewWorkspaces() string {
 	keyRef := []string{
 		"",
 		a.Styles.PanelTitle.Render("  Key reference"),
-		fmt.Sprintf("  %s  open shell in this project — no restart if containers are already running", a.Styles.Key.Render("s")),
+		fmt.Sprintf("  %s  open shell in this project — no restart if workspace unchanged", a.Styles.Key.Render("s")),
 		fmt.Sprintf("  %s  pre-fill Run Project with this path (will restart containers if project changes)", a.Styles.Key.Render("enter")),
 		fmt.Sprintf("  %s  delete saved alias (auto-detected entries cannot be deleted)", a.Styles.Key.Render("d")),
 		"",

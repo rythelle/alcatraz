@@ -509,7 +509,14 @@ func (a *App) doExec(cmdStr string) tea.Cmd {
 // ensureRunning verifica se os containers estão rodando e sobe se não estiverem,
 // executando `then` quando estiverem prontos.
 func (a *App) ensureRunning(then func() tea.Cmd) tea.Cmd {
-	if a.Compose.IsRunning("alcatraz") {
+	return a.ensureRunningImpl(then, false)
+}
+
+// ensureRunningImpl is like ensureRunning but can force a container restart when
+// the active workspace has changed and its path isn't mounted yet.
+func (a *App) ensureRunningImpl(then func() tea.Cmd, forceRestart bool) tea.Cmd {
+	running := a.Compose.IsRunning("alcatraz")
+	if running && !forceRestart {
 		return then()
 	}
 
@@ -532,6 +539,9 @@ func (a *App) ensureRunning(then func() tea.Cmd) tea.Cmd {
 		docker.EnsureContextDir(projectRoot)
 		if err := compose.GenerateOverride(ws, extraPaths); err != nil {
 			return CmdDoneMsg{Err: fmt.Errorf("falha ao configurar workspace: %v", err)}
+		}
+		if running {
+			compose.Down(false).Run()
 		}
 		imageExists := exec.Command("docker", "image", "inspect", "alcatraz:latest").Run() == nil
 		var cmd *exec.Cmd
