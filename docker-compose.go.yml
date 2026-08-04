@@ -1,0 +1,283 @@
+name: alcatraz
+
+services:
+  # Lighthouse — egress proxy (Squid) that enforces the domain whitelist and
+  # watches everything leaving the island.
+  lighthouse:
+    container_name: alcatraz-lighthouse
+    image: ubuntu/squid:latest
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+    # Squid is the ONLY service on egress-net — it is the single hole in the wall
+    # to the real internet. The sandbox and backend cannot route out except
+    # through here.
+    networks:
+      - internal-net
+      - egress-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "squid"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Guard — the Go MITM proxy that redacts secrets/PII from outbound requests
+  # (the obfuscator that controls what the tools inside are allowed to say).
+  guard:
+    container_name: alcatraz-guard
+    image: alcatraz-guard:latest
+    build:
+      context: ./platform/backend
+      dockerfile: Dockerfile
+    # Guard has no egress-net membership: it can only reach the internet by
+    # proxying through Lighthouse (upstream=lighthouse:3128).
+    networks:
+      - internal-net
+    depends_on:
+      lighthouse:
+        condition: service_healthy
+    volumes:
+      - alcatraz-ca-certs:/shared-certs
+      - alcatraz-audit:/var/log/alcatraz
+      # Guard user rules — the host directory is mounted read-only.
+      # Mounting the directory (not the file) lets fsnotify hot-reload edits and
+      # avoids Docker creating a directory when the file does not yet exist.
+      # NEVER mount this into the sandbox (alcatraz) container.
+      - ${HOME}/.alcatraz:/etc/alcatraz:ro
+    environment:
+      - PROXY_PORT=8080
+      - LOG_LEVEL=info
+      - AUDIT_LOG_PATH=/var/log/alcatraz/audit.log
+      - STATS_LOG_PATH=/var/log/alcatraz/stats.jsonl
+      - GUARD_RULES_PATH=/etc/alcatraz/guard-rules.yml
+      - DRY_RUN=false
+      # Reversible tokenization (default on). Redactions become opaque tokens
+      # restored on the response path: the model never sees the value, but when
+      # it echoes the token back the Guard restores the real value before the AI
+      # CLI reads it (gzip-decompressed and reassembled across SSE deltas). Set
+      # ALCATRAZ_VAULT=0 to fall back to destructive [REDACTED] markers.
+      - ALCATRAZ_VAULT=${ALCATRAZ_VAULT:-1}
+    # Hardening: the backend holds the MITM CA and processes untrusted upstream
+    # responses, so shrink its blast radius. It needs no Linux capabilities (it
+    # binds :8080 which is >1024 and only does file+socket IO), a read-only root
+    # (the CA and audit volumes stay writable), and no privilege escalation.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # Isolated container with the AI CLIs (Claude, Gemini, etc.)
+  alcatraz:
+    container_name: alcatraz
+    image: alcatraz:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.alcatraz
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22.19}
+
+    volumes:
+      - alcatraz-home:/home/alcatraz_runner
+      - alcatraz-claude-data:/home/alcatraz_runner/.claude
+      # Read-only: a compromised/prompt-injected agent must not be able to plant
+      # a malicious skill that the user's HOST Claude Code would later execute.
+      - ~/.claude/skills:/home/alcatraz_runner/.claude/skills:ro
+      - alcatraz-gemini-data:/home/alcatraz_runner/.gemini
+      - ${AI_CONTEXT_PATH:-./.ai-context}:/home/alcatraz_runner/.ai-context:rw
+      # shakedown - verbose-command output compressor (token efficiency).
+      # The module gate lives inside the script (ALCATRAZ_MOD_SHAKEDOWN). It is
+      # also mounted as 'slim' — the deprecated alias that prints a rename notice.
+      - ./tools/shakedown.sh:/home/alcatraz_runner/.local/bin/shakedown:ro
+      - ./tools/shakedown.sh:/home/alcatraz_runner/.local/bin/slim:ro
+      # spawn - in-sandbox shim for the disposable-spawn bridge. It only writes a
+      # request file (NO Docker in the sandbox); the host's `alcatraz spawn-watch`
+      # services it. See spawn_watch.go for the trust model.
+      - ./tools/spawn.sh:/home/alcatraz_runner/.local/bin/spawn:ro
+      # websearch - in-sandbox shim for the host-fetched web search bridge. The
+      # sandbox still has no route to a search engine: the shim only writes a
+      # request file, and the host performs one approved https GET on its behalf.
+      # See websearch.go for the trust model.
+      - ./tools/websearch.sh:/home/alcatraz_runner/.local/bin/websearch:ro
+      # Mega Brain - command (+ brain alias) and unified hook init
+      - ./mega-brain/mega-brain.sh:/home/alcatraz_runner/.local/bin/mega-brain:ro
+      - ./mega-brain/mega-brain.sh:/home/alcatraz_runner/.local/bin/brain:ro
+      - ./docker-init/mega-brain-init.sh:/home/alcatraz_runner/.local/bin/mega-brain-init:ro
+      # Mega Brain - SessionStart/SessionEnd hook adapters
+      - ./mega-brain/hooks/start-claude-codex.sh:/home/alcatraz_runner/.local/bin/mb-hook-start-cc:ro
+      - ./mega-brain/hooks/start-gemini.sh:/home/alcatraz_runner/.local/bin/mb-hook-start-gemini:ro
+      - ./mega-brain/hooks/session-end.sh:/home/alcatraz_runner/.local/bin/mb-hook-end:ro
+      - ./mega-brain/hooks/pre-compact.sh:/home/alcatraz_runner/.local/bin/mb-hook-precompact:ro
+      # Mega Brain - per-model instruction files
+      - ./mega-brain/claude:/home/alcatraz_runner/.claude/skills/mega-brain:ro
+      - ./mega-brain/gemini/GEMINI.md:/home/alcatraz_runner/.gemini/GEMINI.md:ro
+      - alcatraz-codex-config:/home/alcatraz_runner/.codex
+      - ./mega-brain/codex/AGENTS.md:/home/alcatraz_runner/.codex/AGENTS.md:ro
+      - alcatraz-opencode-config:/home/alcatraz_runner/.config/opencode
+      - ./mega-brain/opencode/AGENTS.md:/home/alcatraz_runner/.config/opencode/AGENTS.md:ro
+      - ./mega-brain/opencode/plugin.js:/home/alcatraz_runner/.config/opencode/plugin/mega-brain.js:ro
+      - alcatraz-opencode-state:/home/alcatraz_runner/.local/state
+      # opencode shim + per-project Mega Brain autoload, sourced by ~/.bashrc
+      # via its ~/.local/state/ai-env.sh hook. The full opentui TUI is the
+      # default (it works over the nested `docker exec -it` PTY);
+      # ALCATRAZ_OPENCODE_MINI=1 opts into the line-mode interface.
+      - ./docker-init/opencode-tui-shim.sh:/home/alcatraz_runner/.local/state/ai-env.sh:ro
+      # Go backend CA for MITM trust
+      - alcatraz-ca-certs:/shared-certs:ro
+      - alcatraz-pnpm-store:/home/alcatraz_runner/.local/share
+      - alcatraz-node-cache:/home/alcatraz_runner/.npm-global
+      - alcatraz-workspace-cache:/workspace/.cache
+
+    # Sandbox lives ONLY on the internal network — it has no route to the
+    # internet. Its only way out is the http_proxy → Guard (MITM redaction) →
+    # Lighthouse (domain whitelist) path. Direct egress (curl --noproxy, raw
+    # sockets) has nowhere to go.
+    networks:
+      - internal-net
+    depends_on:
+      lighthouse:
+        condition: service_healthy
+      guard:
+        condition: service_healthy
+
+    ports:
+      - "3000:3000"
+      - "3100:3100"
+      - "1455:1455"
+
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 1.5
+    pids_limit: 2048
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+      nproc:
+        soft: 1024
+        hard: 1024
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - KILL
+
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=1G,mode=1777,exec
+      - /run:size=256M,noexec,mode=1777
+      - /home/alcatraz_runner/.config:size=256M,mode=1777
+      - /home/alcatraz_runner/.cache:size=512M,mode=1777
+      - /var/tmp:size=256M,noexec,mode=1777
+      - /home/alcatraz_runner/.opencode:size=256M,mode=0755,uid=1000,gid=1000
+
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./seccomp-profile.json
+
+    environment:
+      - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=1024
+      - PATH=/home/alcatraz_runner/.opencode/bin:/home/alcatraz_runner/.nvm/versions/node/v22.19.0/bin:/home/alcatraz_runner/.npm-global/bin:/home/alcatraz_runner/.local/bin:/home/alcatraz_runner/.claude/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - TERM=xterm-256color
+      - COLORTERM=truecolor
+      # opencode checks for a new release on every start. In here that request
+      # goes through Guard then Lighthouse before it reaches the internet, and
+      # the sandbox can't self-update anyway (read-only root, binary baked into
+      # the image) — so the wait buys nothing. Skipping it is most of the
+      # startup delay.
+      - OPENCODE_DISABLE_AUTOUPDATE=1
+      # Traffic goes through Guard (MITM redaction) before Lighthouse (whitelist)
+      - http_proxy=http://guard:8080
+      - https_proxy=http://guard:8080
+      - HTTP_PROXY=http://guard:8080
+      - HTTPS_PROXY=http://guard:8080
+      - no_proxy=localhost,127.0.0.1,lighthouse,guard
+      - NO_PROXY=localhost,127.0.0.1,lighthouse,guard
+      # Guard CA (MITM trust)
+      - SSL_CERT_FILE=/shared-certs/ca-cert.pem
+      - NODE_EXTRA_CA_CERTS=/shared-certs/ca-cert.pem
+      - CURL_CA_BUNDLE=/shared-certs/ca-cert.pem
+      - GIT_SSL_CAINFO=/shared-certs/ca-cert.pem
+      - NPM_CONFIG_CACHE=/tmp/.npm
+      - CLAUDE_CODE_DISABLE_TELEMETRY=true
+      - NODE_VERSION=${NODE_VERSION:-22.19}
+      # Module toggles resolved by the CLI/alcatraz.sh and passed down (the
+      # single resolution point). The container's shims/hooks read these to
+      # self-disable. Defaults here match the module defaults so a bare
+      # `docker compose up` still behaves sanely. See internal/modules.
+      - ALCATRAZ_MOD_MEGABRAIN=${ALCATRAZ_MOD_MEGABRAIN:-off}
+      - ALCATRAZ_MOD_SHAKEDOWN=${ALCATRAZ_MOD_SHAKEDOWN:-off}
+      - ALCATRAZ_MOD_SPAWN=${ALCATRAZ_MOD_SPAWN:-off}
+      - ALCATRAZ_MOD_WEBSEARCH=${ALCATRAZ_MOD_WEBSEARCH:-off}
+      # Mega Brain optional prefix grouping (set both to enable)
+      - MEGABRAIN_GROUP_PREFIX=${MEGABRAIN_GROUP_PREFIX:-}
+      - MEGABRAIN_GROUP_DIR=${MEGABRAIN_GROUP_DIR:-}
+      # Real project name from the host workspace path (fixes /workspace basename issue)
+      - ALCATRAZ_PROJECT_NAME=${ALCATRAZ_PROJECT_NAME:-}
+
+    stdin_open: true
+    tty: true
+    entrypoint: /bin/bash
+    # PID 1 is the Mega Brain supervisor (not a bare `exec bash`): it traps
+    # SIGTERM to snapshot every project on `docker stop`, and autosaves
+    # periodically so a sudden OOM/kill loses at most MEGABRAIN_AUTOSAVE_SECS.
+    # Interactive shells are separate `docker compose exec` sessions.
+    command: -c "mega-brain-init 2>/dev/null || true; source /workspace/.alcatraz/init.sh 2>/dev/null || true; mega-brain context 2>/dev/null || true; exec mega-brain supervise"
+    # Give the SIGTERM trap room to finish pause-all before SIGKILL.
+    stop_grace_period: 30s
+    restart: "no"
+
+networks:
+  # No route to the internet (internal: true). The sandbox and backend sit here
+  # and can only reach each other and Squid — never an arbitrary external host.
+  # Keeping the 172.30.0.0/16 subnet so squid.conf's private_network ACL matches.
+  internal-net:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
+  # The only network with real internet access. Squid alone is attached to it.
+  egress-net:
+    driver: bridge
+
+volumes:
+  alcatraz-home:
+    driver: local
+  alcatraz-claude-data:
+    driver: local
+  alcatraz-opencode-config:
+    driver: local
+  alcatraz-opencode-state:
+    driver: local
+  alcatraz-pnpm-store:
+    driver: local
+  alcatraz-node-cache:
+    driver: local
+  alcatraz-workspace-cache:
+    driver: local
+  alcatraz-ca-certs:
+    driver: local
+  alcatraz-audit:
+    driver: local
+  alcatraz-codex-config:
+    driver: local
+  alcatraz-gemini-data:
+    driver: local

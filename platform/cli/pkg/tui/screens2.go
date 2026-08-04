@@ -1,0 +1,462 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// workspaceEntry represents an item in the combined workspace list.
+type workspaceEntry struct {
+	Name     string
+	Path     string
+	Detected bool // true = from PROJECT_PATHS, false = saved favorite
+}
+
+func (a *App) workspaceEntries() []workspaceEntry {
+	var entries []workspaceEntry
+	// Saved favorites first
+	for _, name := range a.WorkspaceList {
+		entries = append(entries, workspaceEntry{Name: name, Path: a.Workspaces[name], Detected: false})
+	}
+	// Detected from PROJECT_PATHS
+	for _, path := range a.DetectedProjects {
+		name := filepath.Base(path)
+		entries = append(entries, workspaceEntry{Name: name, Path: path, Detected: true})
+	}
+	return entries
+}
+
+// ── Workspaces ──
+
+func (a *App) handleWorkspacesKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
+	entries := a.workspaceEntries()
+	switch msg.String() {
+	case "up", "k":
+		if a.WSCursor > 0 {
+			a.WSCursor--
+		}
+		return true, nil
+	case "down", "j":
+		if a.WSCursor < len(entries)-1 {
+			a.WSCursor++
+		}
+		return true, nil
+	case "n":
+		a.AliasInput.SetValue("")
+		a.AliasInput.Focus()
+		return true, nil
+	case "d":
+		if len(entries) > 0 && a.WSCursor < len(entries) {
+			entry := entries[a.WSCursor]
+			if !entry.Detected {
+				a.WorkspaceMgr.Remove(entry.Name)
+				ws, _ := a.WorkspaceMgr.Load()
+				a.Workspaces = ws
+				a.WorkspaceList = make([]string, 0, len(ws))
+				for n := range ws {
+					a.WorkspaceList = append(a.WorkspaceList, n)
+				}
+				if a.WSCursor >= len(a.workspaceEntries()) {
+					a.WSCursor = len(a.workspaceEntries()) - 1
+					if a.WSCursor < 0 {
+						a.WSCursor = 0
+					}
+				}
+			}
+		}
+		return true, nil
+	case "enter":
+		if len(entries) > 0 && a.WSCursor < len(entries) {
+			entry := entries[a.WSCursor]
+			a.PathInput.SetValue(entry.Path)
+			a.Screen = ScreenRun
+		}
+		return true, nil
+	case "s":
+		if len(entries) > 0 && a.WSCursor < len(entries) {
+			entry := entries[a.WSCursor]
+			a.State.SetWorkspace(entry.Path)
+			// Only restart if this project isn't already mounted in the running
+			// container. With PROJECT_PATHS multi-mount most projects are already
+			// mounted at /workspace/projects/<name>, so we just open a shell there
+			// — no restart, other shell sessions stay alive.
+			workdir := "/workspace/projects/" + filepath.Base(entry.Path)
+			needsRestart := !a.Compose.IsRunning("alcatraz") || !a.Compose.PathMounted(workdir)
+			return true, a.ensureRunningImpl(a.doShellQuit(entry.Path), needsRestart)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func (a *App) viewWorkspaces() string {
+	title := a.Styles.Title.Render("📁  Workspaces")
+	hint := a.Styles.Hint.Render("  ↑/↓ navigate  •  s open shell  •  enter go to Run Project  •  d delete  •  n add alias")
+
+	entries := a.workspaceEntries()
+	var items []string
+
+	if len(entries) == 0 {
+		items = append(items, "  No workspaces found.")
+		items = append(items, "")
+		items = append(items, fmt.Sprintf("  Press %s to save an alias for the current project", a.Styles.Key.Render("n")))
+		items = append(items, fmt.Sprintf("  Or add paths to %s in your .env file", a.Styles.Key.Render("PROJECT_PATHS")))
+	} else {
+		// Favorites section
+		if len(a.WorkspaceList) > 0 {
+			items = append(items, a.Styles.PanelTitle.Render("  ⭐ Favorites"))
+		}
+		favCount := len(a.WorkspaceList)
+		for i, entry := range entries {
+			if entry.Detected && i == favCount {
+				items = append(items, "")
+				items = append(items, a.Styles.PanelTitle.Render("  🔍 Detected from PROJECT_PATHS"))
+			}
+			exists := "✓"
+			if _, err := os.Stat(entry.Path); err != nil {
+				exists = "⚠"
+			}
+			badge := ""
+			if entry.Detected {
+				badge = a.Styles.Hint.Render(" [auto]")
+			}
+			line := fmt.Sprintf("  %s %-16s %s%s", exists, a.Styles.Key.Render(entry.Name), a.Styles.Hint.Render(entry.Path), badge)
+			if i == a.WSCursor {
+				items = append(items, a.Styles.MenuSelected.Render("> "+line))
+			} else {
+				items = append(items, a.Styles.MenuItem.Render("  "+line))
+			}
+		}
+	}
+
+	// Key reference panel
+	keyRef := []string{
+		"",
+		a.Styles.PanelTitle.Render("  Key reference"),
+		fmt.Sprintf("  %s  open shell in this project — no restart if workspace unchanged", a.Styles.Key.Render("s")),
+		fmt.Sprintf("  %s  pre-fill Run Project with this path (will restart containers if project changes)", a.Styles.Key.Render("enter")),
+		fmt.Sprintf("  %s  delete saved alias (auto-detected entries cannot be deleted)", a.Styles.Key.Render("d")),
+		"",
+		a.Styles.Hint.Render("  Tip: add paths to PROJECT_PATHS in .env to auto-mount multiple projects at startup."),
+	}
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		"",
+		title,
+		hint,
+		"",
+		lipgloss.JoinVertical(lipgloss.Left, items...),
+		lipgloss.JoinVertical(lipgloss.Left, keyRef...),
+	)
+}
+
+// ── Status ──
+
+func (a *App) handleStatusKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
+	if msg.String() == "r" {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (a *App) viewStatus() string {
+	title := a.Styles.Title.Render("ℹ  Status")
+	hint := a.Styles.Hint.Render("  Press r to refresh")
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("  %s  %s", a.Styles.Key.Render("Project Root:"), a.ProjectRoot))
+	lines = append(lines, fmt.Sprintf("  %s  %s", a.Styles.Key.Render("Docker Compose:"), a.Compose.DC))
+	lines = append(lines, "")
+
+	services := []struct {
+		Name string
+		Desc string
+	}{
+		{"alcatraz", "Sandbox (claude, gemini, codex)"},
+		{"guard", "Guard (MITM proxy)"},
+		{"lighthouse", "Lighthouse — egress proxy (domain whitelist)"},
+	}
+
+	for _, svc := range services {
+		status := a.Styles.StatusError.Render("● stopped")
+		if a.Compose.IsRunning(svc.Name) {
+			status = a.Styles.StatusOK.Render("● running")
+		}
+		lines = append(lines, fmt.Sprintf("  %-34s %s  %s", svc.Desc, status, a.Styles.Hint.Render(svc.Name)))
+	}
+
+	lines = append(lines, "")
+	ws := a.State.GetWorkspace()
+	if ws == "" {
+		ws = "(none)"
+	}
+	lines = append(lines, fmt.Sprintf("  %s  %s", a.Styles.Key.Render("Active workspace:"), ws))
+	if ws != "(none)" {
+		lines = append(lines, fmt.Sprintf("  %s  %s → %s",
+			a.Styles.Key.Render("Container path:"),
+			a.Styles.Hint.Render(ws),
+			a.Styles.Key.Render("/workspace/projects/"+filepath.Base(ws))))
+	}
+
+	// Mounted volumes from PROJECT_PATHS
+	extra := a.DetectedProjects
+	if len(extra) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %s", a.Styles.Key.Render("PROJECT_PATHS mounts:")))
+		for _, p := range extra {
+			lines = append(lines, fmt.Sprintf("    %s → %s",
+				a.Styles.Hint.Render(p),
+				a.Styles.Key.Render("/workspace/projects/"+filepath.Base(p))))
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, a.Styles.Hint.Render("  Tip: paths in PROJECT_PATHS are mounted at startup — open multiple projects with s without restarting."))
+
+	panel := a.Styles.Panel.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		"",
+		title,
+		hint,
+		"",
+		panel,
+	)
+}
+
+// ── Logs ──
+
+type logService struct {
+	Key  string
+	Name string
+	Svc  string // docker compose service name, "" = all
+	Desc string
+}
+
+var logServices = []logService{
+	{"1", "Sandbox / Jail", "alcatraz", "Main container (claude, gemini, mega-brain)"},
+	{"2", "Guard", "guard", "MITM proxy + secrets sanitizer"},
+	{"3", "Lighthouse", "lighthouse", "Egress domain whitelist"},
+	{"a", "All", "", "All services together"},
+}
+
+func (a *App) handleLogsKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
+	for _, svc := range logServices {
+		if msg.String() == svc.Key {
+			svcCopy := svc
+			return true, a.ensureRunning(func() tea.Cmd {
+				return a.fetchLogs(svcCopy.Svc, svcCopy.Name)
+			})
+		}
+	}
+	return false, nil
+}
+
+func (a *App) viewLogs() string {
+	title := a.Styles.Title.Render("📋  Logs")
+	hint := a.Styles.Hint.Render("  Press a key — last 200 lines — ESC back, r refresh")
+
+	var items []string
+	for _, svc := range logServices {
+		line := fmt.Sprintf("  [%s] %-18s %s", a.Styles.Key.Render(svc.Key), svc.Name, a.Styles.Hint.Render(svc.Desc))
+		items = append(items, line)
+	}
+
+	panel := a.Styles.Panel.Render(lipgloss.JoinVertical(lipgloss.Left, items...))
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		"",
+		title,
+		hint,
+		"",
+		panel,
+	)
+}
+
+func (a *App) fetchLogs(dockerSvc, displayName string) tea.Cmd {
+	a.OutputTitle = fmt.Sprintf("📋  Logs: %s", displayName)
+	a.OutputText = ""
+	a.Loading = true
+	a.LoadingText = fmt.Sprintf("Fetching logs for %s...", displayName)
+	a.Screen = ScreenOutput
+
+	return func() tea.Msg {
+		cmd := a.Compose.Logs(dockerSvc, false, 200)
+		out, err := cmd.CombinedOutput()
+		if err != nil && len(out) == 0 {
+			return LogsSnapshotMsg{Service: dockerSvc, Err: err}
+		}
+		return LogsSnapshotMsg{Service: dockerSvc, Output: string(out)}
+	}
+}
+
+// ── Tests ──
+
+func (a *App) handleTestsKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
+	switch msg.String() {
+	case "1":
+		return true, a.doTestGuard()
+	case "2":
+		return true, a.doTestSecurity()
+	}
+	return false, nil
+}
+
+func (a *App) viewTests() string {
+	title := a.Styles.Title.Render("🧪  Test Suites")
+	hint := a.Styles.Hint.Render("  Select a test suite to run")
+
+	items := []string{
+		fmt.Sprintf("  [%s] %-24s %s", a.Styles.Key.Render("1"), "Guard", a.Styles.Hint.Render("Go unit + real-world sanitizer tests")),
+		fmt.Sprintf("  [%s] %-24s %s", a.Styles.Key.Render("2"), "Security", a.Styles.Hint.Render("Isolation validation (needs running containers)")),
+	}
+
+	panel := a.Styles.Panel.Render(lipgloss.JoinVertical(lipgloss.Left, items...))
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		"",
+		title,
+		hint,
+		"",
+		panel,
+	)
+}
+
+// ── Confirm ──
+
+func (a *App) handleConfirmKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
+	switch msg.String() {
+	case "left", "h":
+		if a.ConfirmCursor > 0 {
+			a.ConfirmCursor--
+		}
+		return true, nil
+	case "right", "l":
+		if a.ConfirmCursor < 1 {
+			a.ConfirmCursor++
+		}
+		return true, nil
+	case "enter":
+		if a.ConfirmCursor == 0 {
+			return true, a.ConfirmAction()
+		}
+		a.Screen = ScreenDashboard
+		return true, nil
+	}
+	return false, nil
+}
+
+func (a *App) viewConfirm() string {
+	title := a.Styles.DialogTitle.Render(a.ConfirmTitle)
+	text := a.Styles.Value.Render(a.ConfirmText)
+
+	yesBtn := a.Styles.Button.Render("  Yes  ")
+	noBtn := a.Styles.Button.Render("  No  ")
+
+	if a.ConfirmCursor == 0 {
+		yesBtn = a.Styles.ButtonFocused.Render("  Yes  ")
+	} else {
+		noBtn = a.Styles.ButtonFocused.Render("  No  ")
+	}
+
+	buttons := lipgloss.JoinHorizontal(lipgloss.Center, yesBtn, noBtn)
+
+	dialog := a.Styles.Dialog.Render(
+		lipgloss.JoinVertical(
+			lipgloss.Center,
+			title,
+			"",
+			text,
+			"",
+			buttons,
+		),
+	)
+
+	return lipgloss.Place(
+		a.Width, a.Height-4,
+		lipgloss.Center, lipgloss.Center,
+		dialog,
+	)
+}
+
+func (a *App) doStop() tea.Cmd {
+	cmd := a.Compose.Down(false)
+	return a.runCmd(cmd, "Stopping containers...")
+}
+
+func (a *App) doClean() tea.Cmd {
+	cmd := a.Compose.Down(true)
+	return a.runCmd(cmd, "Cleaning up...")
+}
+
+// ── Output ──
+
+func (a *App) handleOutputKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		a.Loading = false
+		if a.LogsActive {
+			a.LogsActive = false
+			a.Screen = ScreenLogs
+		} else {
+			a.Screen = ScreenDashboard
+		}
+		return true, nil
+	case "r":
+		if a.LogsActive {
+			for _, svc := range logServices {
+				if svc.Svc == a.LogsService {
+					return true, a.fetchLogs(svc.Svc, svc.Name)
+				}
+			}
+		}
+		return false, nil
+	}
+	return false, nil
+}
+
+func (a *App) viewOutput() string {
+	title := a.Styles.Title.Render(a.OutputTitle)
+
+	var content string
+	if a.Loading {
+		content = fmt.Sprintf("\n  %s  %s\n", a.Spinner.View(), a.LoadingText)
+	}
+
+	if a.OutputText != "" {
+		lines := strings.Split(a.OutputText, "\n")
+		maxLines := a.Height - 12
+		if len(lines) > maxLines && maxLines > 0 {
+			lines = lines[len(lines)-maxLines:]
+			content += a.Styles.Hint.Render("  ... (output truncated) ...\n")
+		}
+		content += a.Styles.LogOutput.Render(strings.Join(lines, "\n"))
+	}
+
+	var footerText string
+	if a.LogsActive {
+		footerText = "  ESC back to logs  •  r refresh"
+	} else {
+		footerText = "  ESC back to menu"
+	}
+	footer := a.Styles.Hint.Render(footerText)
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		"",
+		title,
+		"",
+		content,
+		"",
+		footer,
+	)
+}

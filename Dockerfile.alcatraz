@@ -1,0 +1,166 @@
+# Dockerfile for Alcatraz - secure isolation of CLI tools
+
+# --------------------------------------------------------------------------
+# Stage 1 — build alcatraz-helper, the sandbox's JSON plumbing.
+#
+# Alcatraz's own scripts (bridge requests, Mega Brain hooks, settings merges)
+# need to encode and decode JSON. Doing that with whatever interpreter happens
+# to be installed would chain the product to the user's language choice: swap
+# the LANGUAGE RUNTIME LAYER below from Node to Java and the plumbing would
+# break. So it is a static, dependency-free binary instead.
+#
+# The toolchain stays in this stage — only the ~2 MB binary is copied into the
+# sandbox, the same pattern platform/backend/Dockerfile uses.
+# --------------------------------------------------------------------------
+FROM golang:1.25-bookworm AS helper-builder
+WORKDIR /src
+COPY platform/sandbox-helper/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/alcatraz-helper .
+
+# --------------------------------------------------------------------------
+# Stage 2 — the sandbox image itself.
+# --------------------------------------------------------------------------
+FROM ubuntu:22.04
+
+# Disable interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install only the essentials (as root during build).
+# Deliberately minimal: the sandbox ships ONE language runtime (Node, installed
+# below) and nothing else. Every extra interpreter left lying around is another
+# ready-made tool for a compromised package or an injected agent to reach for.
+# Need a different stack? See "Swapping the language runtime" in the README.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up user and directories BEFORE restricting the system
+RUN useradd -m -s /bin/bash -u 1000 alcatraz_runner && \
+    mkdir -p /workspace && \
+    chown -R alcatraz_runner:alcatraz_runner /workspace && \
+    echo '[ -f "${HOME}/.local/state/ai-env.sh" ] && source "${HOME}/.local/state/ai-env.sh"' \
+        >> /home/alcatraz_runner/.bashrc
+
+# Prepare environment for global tools
+ENV NPM_CONFIG_PREFIX=/home/alcatraz_runner/.npm-global
+ENV PATH=/home/alcatraz_runner/.opencode/bin:/home/alcatraz_runner/.nvm/versions/node/v22.19.0/bin:/home/alcatraz_runner/.npm-global/bin:/home/alcatraz_runner/.local/bin:/home/alcatraz_runner/.claude/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV HOME=/home/alcatraz_runner
+
+# Create directory structure BEFORE installing as user (avoids permission errors)
+RUN mkdir -p \
+    /home/alcatraz_runner/.npm-global \
+    /home/alcatraz_runner/.claude \
+    /home/alcatraz_runner/.config \
+    /home/alcatraz_runner/.config/opencode \
+    /home/alcatraz_runner/.local/bin \
+    /home/alcatraz_runner/.local/share \
+    /home/alcatraz_runner/.cache \
+    /home/alcatraz_runner/.ai-context \
+    /home/alcatraz_runner/.codex \
+    /home/alcatraz_runner/.gemini \
+    /home/alcatraz_runner/.opencode/bin && \
+    chown -R alcatraz_runner:alcatraz_runner /home/alcatraz_runner
+
+# Define workspace
+WORKDIR /workspace
+
+# Switch to the non-root user for EVERYTHING from here on
+USER alcatraz_runner
+
+# Alcatraz's own plumbing. Deliberately placed ABOVE the language runtime layer:
+# it is part of the product, not part of your dev environment, and it must
+# survive any change you make below.
+COPY --from=helper-builder --chown=alcatraz_runner:alcatraz_runner \
+    /out/alcatraz-helper /home/alcatraz_runner/.local/bin/alcatraz-helper
+
+# ==========================================================================
+# LANGUAGE RUNTIME LAYER — your development environment. Swap it to target
+# another technology (Java, Go, Python, …); the recipe is in the README
+# under "Swapping the language runtime".
+#
+# Nothing in Alcatraz itself depends on what you put here: the shims and
+# hooks talk to alcatraz-helper (installed above) instead of to an
+# interpreter. The one real coupling is the agents — the Gemini CLI and
+# Codex are npm packages, so removing Node costs you those two. Claude Code
+# and opencode are standalone binaries and keep working either way.
+# ==========================================================================
+
+# Install NVM and Node.js (version controlled by the build arg)
+ARG NODE_VERSION=22.19
+
+ENV NVM_DIR=/home/alcatraz_runner/.nvm
+RUN unset NPM_CONFIG_PREFIX && \
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && \
+    . "$NVM_DIR/nvm.sh" && \
+    nvm install "${NODE_VERSION}" && \
+    nvm alias default "${NODE_VERSION}" && \
+    nvm cache clear && \
+    NODE_BIN="$(nvm which default)" && \
+    NODE_DIR="$(dirname "$NODE_BIN")" && \
+    ln -sf "$NODE_BIN"       /home/alcatraz_runner/.local/bin/node && \
+    ln -sf "$NODE_DIR/npm"   /home/alcatraz_runner/.local/bin/npm  && \
+    ln -sf "$NODE_DIR/npx"   /home/alcatraz_runner/.local/bin/npx
+
+ENV NPM_CONFIG_PREFIX=
+
+# --- Add another stack here -----------------------------------------------
+# Example (Java 21 + Maven) — uncomment, then allow the Maven Central domains
+# in squid.conf, otherwise the build/downloads are blocked by Lighthouse:
+#
+#   USER root
+#   RUN apt-get update && apt-get install -y --no-install-recommends \
+#           openjdk-21-jdk-headless maven \
+#       && rm -rf /var/lib/apt/lists/*
+#   USER alcatraz_runner
+#   ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+#
+# ==========================================================================
+# END LANGUAGE RUNTIME LAYER
+# ==========================================================================
+
+# Gemini CLI - no curl/binary installer, npm is the only option
+RUN . "$NVM_DIR/nvm.sh" && \
+    npm install -g @google/gemini-cli && npm cache clean --force || echo "Gemini CLI install falhou"
+
+# Install Claude Code via curl and copy the binary to ~/.local/bin (outside volumes)
+# ~/.local/share is overridden by the alcatraz-pnpm-store volume at runtime, so
+# we need a real copy of the binary in ~/.local/bin (not a symlink into the volume).
+RUN SINGLE_EXE=1 curl -fsSL https://claude.ai/install.sh | bash && \
+    CLAUDE_TARGET=$(readlink -f /home/alcatraz_runner/.local/bin/claude 2>/dev/null) && \
+    if [ -f "$CLAUDE_TARGET" ]; then \
+        cp --remove-destination "$CLAUDE_TARGET" /home/alcatraz_runner/.local/bin/claude; \
+        echo "Claude Code: binary copied to ~/.local/bin/claude"; \
+    else \
+        echo "Claude Code install via curl falhou"; \
+    fi
+
+# Install opencode via the official script and copy the binary to ~/.local/bin (outside volumes)
+# ~/.opencode is mounted as tmpfs at runtime (to allow writes), so the binary
+# must live in ~/.local/bin/opencode as a real copy.
+RUN curl -fsSL https://opencode.ai/install | bash && \
+    if [ -f /home/alcatraz_runner/.opencode/bin/opencode ]; then \
+        cp /home/alcatraz_runner/.opencode/bin/opencode /home/alcatraz_runner/.local/bin/opencode; \
+        echo "opencode: binary copied to ~/.local/bin/opencode"; \
+    else \
+        echo "OpenCode install via curl falhou"; \
+    fi
+
+# Install Codex (OpenAI) via npm
+RUN npm install -g @openai/codex && npm cache clean --force && \
+    echo "Codex: instalado via npm"
+
+# Init script that checks available tools
+RUN mkdir -p /workspace/.alcatraz && \
+    echo '#!/bin/bash' > /workspace/.alcatraz/init.sh && \
+    echo 'echo "[Alcatraz] Available tools:"' >> /workspace/.alcatraz/init.sh && \
+    echo 'command -v node && echo "  ✓ Node.js: $(node -v)"' >> /workspace/.alcatraz/init.sh && \
+    echo 'command -v npm && echo "  ✓ NPM: $(npm -v)"' >> /workspace/.alcatraz/init.sh && \
+    echo 'command -v git && echo "  ✓ Git: $(git -v)"' >> /workspace/.alcatraz/init.sh && \
+    echo 'echo ""' >> /workspace/.alcatraz/init.sh && \
+    chmod +x /workspace/.alcatraz/init.sh
+
+# Expose only stdin/stdout
+ENTRYPOINT ["/bin/bash"]
+CMD ["-c", "echo 'Alcatraz ready. Mount your project with -v /seu/project:/workspace'"]

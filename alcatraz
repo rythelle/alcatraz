@@ -1,0 +1,60 @@
+#!/bin/bash
+# Alcatraz CLI wrapper
+# Builds the Go CLI if needed, delegates all commands to it,
+# and handles post-TUI actions (like auto-opening a shell).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CLI_DIR="$SCRIPT_DIR/platform/cli"
+CLI_BIN="$CLI_DIR/alcatraz-cli"
+
+# Build if missing or ANY Go source is newer (not just main.go — TUI code
+# lives in pkg/, internal/; comparing only main.go left stale binaries).
+if [ ! -f "$CLI_BIN" ] || \
+   [ -n "$(find "$CLI_DIR" \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -newer "$CLI_BIN" -print -quit 2>/dev/null)" ]; then
+    echo "Building Alcatraz CLI..."
+    (cd "$CLI_DIR" && go build -o alcatraz-cli .)
+    echo "Done."
+fi
+
+# Run the CLI
+ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" "$@"
+
+# ── Post-TUI actions ──
+# If the TUI wrote a next-action file, execute it now.
+NEXT_ACTION_FILE="$SCRIPT_DIR/.alcatraz-next-action"
+if [ -f "$NEXT_ACTION_FILE" ]; then
+    ACTION="$(head -n1 "$NEXT_ACTION_FILE" | cut -d'|' -f1)"
+    # -f2- keeps everything after the first '|' so a shell-run command with its
+    # own arguments (or pipes) survives intact.
+    TARGET="$(head -n1 "$NEXT_ACTION_FILE" | cut -d'|' -f2-)"
+    rm -f "$NEXT_ACTION_FILE"
+
+    # The Bubble Tea TUI puts the terminal in raw mode; if it exited uncleanly
+    # (Ctrl+C, q, etc.) the next interactive command (shell) may inherit a
+    # broken state where Enter is not processed. Restore a sane cooked state.
+    [ -t 0 ] && stty sane 2>/dev/null || true
+
+    case "$ACTION" in
+        shell)
+            echo ""
+            echo "Opening shell in: $TARGET"
+            # The TUI already started containers via ensureRunning and saved the
+            # workspace to state. Calling 'run' here with a different path would
+            # restart containers and kill any other active shell sessions.
+            ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" shell
+            ;;
+        run)
+            echo ""
+            echo "Starting Alcatraz with project: $TARGET"
+            ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" run "$TARGET"
+            ;;
+        shell-run)
+            echo ""
+            echo "Opening shell and running: $TARGET"
+            # shellcheck disable=SC2086
+            ALCATRAZ_ROOT="$SCRIPT_DIR" "$CLI_BIN" shell-run $TARGET
+            ;;
+    esac
+fi
