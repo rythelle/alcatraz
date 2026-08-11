@@ -122,6 +122,11 @@ services:
       - ./mega-brain/gemini/GEMINI.md:/home/alcatraz_runner/.gemini/GEMINI.md:ro
       - alcatraz-codex-config:/home/alcatraz_runner/.codex
       - ./mega-brain/codex/AGENTS.md:/home/alcatraz_runner/.codex/AGENTS.md:ro
+      # Host Codex skills, read-only for the same reason as ~/.claude/skills.
+      # They land beside ~/.codex (a volume Codex must stay able to write, for
+      # its own .system skills); codex-skills-init symlinks them in at boot.
+      - ~/.codex/skills:/home/alcatraz_runner/.codex-skills-host:ro
+      - ./docker-init/codex-skills-init.sh:/home/alcatraz_runner/.local/bin/codex-skills-init:ro
       - alcatraz-opencode-config:/home/alcatraz_runner/.config/opencode
       - ./mega-brain/opencode/AGENTS.md:/home/alcatraz_runner/.config/opencode/AGENTS.md:ro
       - ./mega-brain/opencode/plugin.js:/home/alcatraz_runner/.config/opencode/plugin/mega-brain.js:ro
@@ -236,7 +241,7 @@ services:
     # SIGTERM to snapshot every project on `docker stop`, and autosaves
     # periodically so a sudden OOM/kill loses at most MEGABRAIN_AUTOSAVE_SECS.
     # Interactive shells are separate `docker compose exec` sessions.
-    command: -c "mega-brain-init 2>/dev/null || true; source /workspace/.alcatraz/init.sh 2>/dev/null || true; mega-brain context 2>/dev/null || true; exec mega-brain supervise"
+    command: -c "codex-skills-init 2>/dev/null || true; mega-brain-init 2>/dev/null || true; source /workspace/.alcatraz/init.sh 2>/dev/null || true; mega-brain context 2>/dev/null || true; exec mega-brain supervise"
     # Give the SIGTERM trap room to finish pause-all before SIGKILL.
     stop_grace_period: 30s
     restart: "no"
