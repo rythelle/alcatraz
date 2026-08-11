@@ -75,22 +75,37 @@ type digitRef struct {
 // characters (spaces, common punctuation, zero-width marks), folds Unicode
 // digits to ASCII, and redacts any window whose digits form a valid CPF, CNPJ,
 // PIS, CNS, or payment card — testing the reversed order too, to defeat `rev`.
+//
+// A run with a hex letter touching it directly is skipped: that is a UUID or a
+// hash, not a document someone separated to sneak it past the literal
+// patterns. The adjacency must be direct, so a label like "CPF: 111.444.777-35"
+// (an 'F' held off by punctuation) still gets caught.
 func redactSeparatedDigits(text string, v *Vault) (string, int) {
 	var spans []byteSpan
 	refs := make([]digitRef, 0, 32)
 	gap := 0
+	hexAdjacent := false
+	prevDigit, prevHexLetter := false, false
 
 	flush := func() {
-		if len(refs) >= 11 {
+		if len(refs) >= 11 && !hexAdjacent {
 			spans = append(spans, matchIDs(refs)...)
 		}
 		refs = refs[:0]
 		gap = 0
+		hexAdjacent = false
 	}
 
 	for i := 0; i < len(text); {
 		r, size := utf8.DecodeRuneInString(text[i:])
+		isDigit := false
 		if d, ok := foldDigit(r); ok {
+			isDigit = true
+			// A hex letter immediately before this digit taints the run it
+			// starts; the letter itself already flushed the previous run.
+			if prevHexLetter {
+				hexAdjacent = true
+			}
 			refs = append(refs, digitRef{d: d, start: i, end: i + size})
 			gap = 0
 		} else if isConnector(r) {
@@ -99,8 +114,15 @@ func redactSeparatedDigits(text string, v *Vault) (string, int) {
 				flush()
 			}
 		} else {
+			// Taint before flushing, so the run this letter terminates is the
+			// one marked.
+			if prevDigit && isHexLetter(r) {
+				hexAdjacent = true
+			}
 			flush()
 		}
+		prevDigit = isDigit
+		prevHexLetter = isHexLetter(r)
 		i += size
 	}
 	flush()
@@ -115,6 +137,13 @@ func redactSeparatedDigits(text string, v *Vault) (string, int) {
 
 // matchIDs slides validator windows over a group's digits and returns the byte
 // spans of every valid ID, longest/most-specific first, without overlap.
+//
+// A window must align to the group's separator layout: it starts where a
+// contiguous digit segment starts and ends where one ends. Separating a
+// document is what the writer does to hide it, so the separators are exactly
+// where its boundaries are. Sliding freely instead meant a plain 19-digit
+// timestamp offered nine 11-digit windows, and PIS alone accepts 10% of
+// random 11-digit strings — nearly every timestamp matched something.
 func matchIDs(refs []digitRef) []byteSpan {
 	n := len(refs)
 	buf := make([]byte, n)
@@ -125,11 +154,23 @@ func matchIDs(refs []digitRef) []byteSpan {
 	used := make([]bool, n)
 	var out []byteSpan
 
+	// segStart/segEnd mark digits with no adjacent digit on that side, i.e.
+	// something separated them in the source text.
+	segStart := make([]bool, n)
+	segEnd := make([]bool, n)
+	for i := range refs {
+		segStart[i] = i == 0 || refs[i].start != refs[i-1].end
+		segEnd[i] = i == n-1 || refs[i+1].start != refs[i].end
+	}
+
 	consider := func(width int, ok func(string) bool) {
 		if width > n {
 			return
 		}
 		for i := 0; i+width <= n; i++ {
+			if !segStart[i] || !segEnd[i+width-1] {
+				continue
+			}
 			free := true
 			for j := i; j < i+width; j++ {
 				if used[j] {
@@ -287,6 +328,13 @@ func foldDigit(r rune) (byte, bool) {
 		return byte('0' + (r - 0x06F0)), true
 	}
 	return 0, false
+}
+
+// isHexLetter reports whether r is one of the ASCII letters a hexadecimal
+// identifier is built from — the marker that a digit run belongs to a UUID or
+// a hash rather than to a document.
+func isHexLetter(r rune) bool {
+	return (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
 }
 
 var zeroWidth = map[rune]bool{
