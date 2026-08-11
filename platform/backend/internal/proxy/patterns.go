@@ -462,6 +462,8 @@ var SensitivePatterns = []SensitivePattern{
 var AIHostPatterns = map[string]string{
 	`.*\.openai\.com`:                         "openai",
 	`openai\.com`:                             "openai",
+	`.*\.chatgpt\.com`:                        "openai",
+	`chatgpt\.com`:                            "openai",
 	`.*\.anthropic\.com`:                      "anthropic",
 	`anthropic\.com`:                          "anthropic",
 	`.*\.generativelanguage\.googleapis\.com`: "google",

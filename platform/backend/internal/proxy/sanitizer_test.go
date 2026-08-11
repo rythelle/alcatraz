@@ -333,6 +333,14 @@ func TestDetectProvider(t *testing.T) {
 		{"api.mistral.ai", "mistral"},
 		{"mistral.ai", "mistral"},
 		{"unknown.example.com", "unknown"},
+
+		// The Codex CLI signs in with ChatGPT and then talks to
+		// chatgpt.com/backend-api/codex, never to api.openai.com. Leaving it
+		// "unknown" skipped detokenizeResponse, so any vault token the Guard
+		// put into a Codex request was never restored on the way back.
+		{"chatgpt.com", "openai"},
+		{"chatgpt.com:443", "openai"},
+		{"ab.chatgpt.com", "openai"},
 	}
 
 	for _, tt := range tests {
