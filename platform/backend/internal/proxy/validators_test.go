@@ -61,6 +61,20 @@ func TestValidateCard(t *testing.T) {
 		{"1234 5678 9012 3456", false}, // unknown issuer + Luhn fails
 		{"1111 1111 1111 1111", false}, // no valid issuer prefix
 		{"4111 1111 1111", false},      // too short
+
+		// Luhn-valid but no issuer actually assigns these BINs. The old
+		// "anything starting with 6" catch-all accepted them, which is how
+		// UUID segments turned into [REDACTED_BY_ALCATRAZ_ID].
+		{"6146 7970 8433 7594", false},
+		{"6299 9999 9999 9998", false},
+		{"6000 0000 0000 0007", false},
+
+		// Real BINs in the same 6-range must keep validating.
+		{"6362 9700 0000 0003", true}, // Elo
+		{"6500 3100 0000 0005", true}, // Elo
+		{"6062 8200 0000 0003", true}, // Hipercard
+		{"6221 2600 0000 0000", true}, // UnionPay
+		{"5090 0000 0000 0000", true}, // Elo (50 range)
 	}
 	for _, c := range cases {
 		if got := validateCard(c.in); got != c.want {

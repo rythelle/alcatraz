@@ -125,23 +125,43 @@ func luhnValid(d string) bool {
 
 // cardIssuerValid reports whether a bare card number begins with a recognized
 // major-issuer prefix. Combined with Luhn this rejects most random digit runs.
+//
+// Every range here is one an issuer actually assigns. The earlier rule ended
+// in a catch-all for "50" and for any leading "6", which accepted a tenth of
+// the whole number space on its own — so a UUID segment like 6146-7970-… only
+// had to clear Luhn to be redacted as a payment card.
 func cardIssuerValid(d string) bool {
+	// inRange reports whether d starts inside the inclusive BIN range [lo,hi];
+	// lo and hi must be the same width.
+	inRange := func(lo, hi string) bool {
+		w := len(lo)
+		return len(d) >= w && d[:w] >= lo && d[:w] <= hi
+	}
 	switch {
 	case strings.HasPrefix(d, "4"): // Visa
 		return true
-	case len(d) >= 2 && d[0] == '5' && d[1] >= '1' && d[1] <= '5': // Mastercard
+	case inRange("51", "55"), inRange("2221", "2720"): // Mastercard
 		return true
-	case len(d) >= 4 && d[:4] >= "2221" && d[:4] <= "2720": // Mastercard 2-series
+	case inRange("34", "34"), inRange("37", "37"): // Amex
 		return true
-	case len(d) >= 2 && d[0] == '3' && (d[1] == '4' || d[1] == '7'): // Amex
+	case inRange("300", "305"), inRange("36", "36"), inRange("38", "39"): // Diners
 		return true
-	case len(d) >= 2 && d[0] == '3' && (d[1] == '0' || d[1] == '6' || d[1] == '8'): // Diners
+	case inRange("6011", "6011"), inRange("644", "649"), inRange("65", "65"): // Discover
 		return true
-	case strings.HasPrefix(d, "6011") || strings.HasPrefix(d, "65"): // Discover
+	case inRange("3528", "3589"): // JCB
 		return true
-	case len(d) >= 4 && d[:4] >= "3528" && d[:4] <= "3589": // JCB
+	case inRange("622126", "622925"), inRange("624", "626"): // UnionPay
 		return true
-	case strings.HasPrefix(d, "50") || (len(d) >= 2 && d[0] == '6'): // Maestro / Elo-ish
+	case inRange("606282", "606282"), inRange("637095", "637095"),
+		inRange("637568", "637568"), inRange("637599", "637599"),
+		inRange("637609", "637609"), inRange("637612", "637612"): // Hipercard
+		return true
+	case inRange("438935", "438935"), inRange("451416", "451416"),
+		inRange("457393", "457393"), inRange("504175", "504175"),
+		inRange("506699", "506778"), inRange("509000", "509999"),
+		inRange("627780", "627780"), inRange("636297", "636297"),
+		inRange("636368", "636368"), inRange("650031", "650920"),
+		inRange("651652", "651679"), inRange("655000", "655058"): // Elo
 		return true
 	}
 	return false
