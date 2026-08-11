@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/alcatraz/alcatraz/internal/rules"
 	"github.com/rs/zerolog"
@@ -26,6 +27,7 @@ type MITMProxy struct {
 	vault    *Vault
 	log      zerolog.Logger
 	upstream string
+	client   *http.Client
 	port     int
 	dryRun   bool
 	reqID    uint64
@@ -41,6 +43,7 @@ func NewMITMProxy(ca *CA, audit *AuditLogger, stats *StatsLogger, rulesWatcher *
 		vault:    vault,
 		log:      log,
 		upstream: upstream,
+		client:   newUpstreamClient(upstream),
 		port:     port,
 		dryRun:   dryRun,
 	}
@@ -118,7 +121,7 @@ func (p *MITMProxy) handleHTTPS(clientConn net.Conn, reader *bufio.Reader, conne
 	// response whose length isn't known up front.
 	defer tlsConn.Close()
 
-	client := p.upstreamClient()
+	client := p.client
 	tlsReader := bufio.NewReader(tlsConn)
 
 	for {
@@ -170,7 +173,7 @@ func (p *MITMProxy) handleHTTPRequest(clientConn net.Conn, reader *bufio.Reader,
 	req.RequestURI = ""
 	p.sanitizeRequest(req, req.Host)
 
-	resp, err := p.upstreamClient().Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		p.log.Error().Err(err).Str("host", req.Host).Msg("Upstream HTTP request failed")
 		fmt.Fprintf(clientConn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -380,12 +383,25 @@ func gunzipAll(b []byte) ([]byte, error) {
 	return io.ReadAll(zr)
 }
 
-func (p *MITMProxy) upstreamClient() *http.Client {
+// newUpstreamClient builds the single client every proxied request shares.
+//
+// It must be built once and reused: an http.Transport owns its own connection
+// pool, so creating one per request leaked a pool per request. None was ever
+// reused, and each sat on an idle connection to Lighthouse until Squid dropped
+// it at its 300s request_timeout. Reusing a connection Squid had already closed
+// surfaced as `Post ".../codex/responses": unexpected EOF` — a POST body is not
+// replayable, so Go could not silently retry it.
+//
+// IdleConnTimeout stays well under that 300s so this side always closes first.
+func newUpstreamClient(upstream string) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			Proxy: func(_ *http.Request) (*url.URL, error) {
-				return &url.URL{Scheme: "http", Host: p.upstream}, nil
+				return &url.URL{Scheme: "http", Host: upstream}, nil
 			},
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:     90 * time.Second,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
