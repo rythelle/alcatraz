@@ -193,15 +193,19 @@ func TestProxySendsCloseNotify(t *testing.T) {
 
 // The MITM cert has to chain to Guard's CA, otherwise a strict client rejects
 // the connection before any of the above matters.
+//
+// The host has to be one Guard actually inspects: auth.openai.com, used here
+// before, is in mitmBypassHosts now and is tunnelled raw, so no cert of ours
+// is ever presented for it. That bypass is asserted by TestShouldBypassMITM.
 func TestProxyCertificateChainsToCA(t *testing.T) {
 	addr, caPEM := startTestMITM(t)
-	conn, _ := connectThroughProxy(t, addr, caPEM, "auth.openai.com:443")
+	conn, _ := connectThroughProxy(t, addr, caPEM, "api.openai.com:443")
 
 	state := conn.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
 		t.Fatal("no certificate presented")
 	}
-	if err := state.PeerCertificates[0].VerifyHostname("auth.openai.com"); err != nil {
+	if err := state.PeerCertificates[0].VerifyHostname("api.openai.com"); err != nil {
 		t.Errorf("certificate is not valid for the requested host: %v", err)
 	}
 }

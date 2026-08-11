@@ -93,9 +93,34 @@ func (p *MITMProxy) handleConn(clientConn net.Conn) {
 	}
 }
 
+// mitmBypassHosts lists hosts whose TLS must reach the origin byte-for-byte
+// untouched, instead of being terminated and re-established by Guard's own
+// HTTP client. Guard's outbound TLS handshake doesn't carry a real browser's
+// fingerprint, which trips Cloudflare's bot challenge in front of
+// auth.openai.com: it answers with an HTML "Just a moment..." page instead of
+// the JSON the Codex CLI's device-code login expects, and the CLI's decode
+// fails. This host only carries OAuth/device-auth handshake traffic (never
+// model or code content), so skipping inspection here doesn't weaken secret
+// scrubbing on real AI provider traffic.
+var mitmBypassHosts = map[string]bool{
+	"auth.openai.com": true,
+}
+
+func shouldBypassMITM(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return mitmBypassHosts[host]
+}
+
 func (p *MITMProxy) handleHTTPS(clientConn net.Conn, reader *bufio.Reader, connectReq *http.Request) {
 	host := connectReq.Host
 	p.log.Debug().Str("host", host).Msg("CONNECT")
+
+	if shouldBypassMITM(host) {
+		p.tunnelRaw(clientConn, host)
+		return
+	}
 
 	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
@@ -167,6 +192,48 @@ func (p *MITMProxy) handleHTTPS(clientConn net.Conn, reader *bufio.Reader, conne
 			break
 		}
 	}
+}
+
+// tunnelRaw relays the CONNECT tunnel byte-for-byte through Lighthouse to
+// host, without terminating TLS. Used for hosts in mitmBypassHosts, where
+// inspecting the traffic costs more (a broken login) than it protects.
+func (p *MITMProxy) tunnelRaw(clientConn net.Conn, host string) {
+	upstreamConn, err := net.Dial("tcp", p.upstream)
+	if err != nil {
+		p.log.Error().Err(err).Str("host", host).Msg("MITM bypass: dial upstream failed")
+		fmt.Fprintf(clientConn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		return
+	}
+	defer upstreamConn.Close()
+
+	fmt.Fprintf(upstreamConn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+	upReader := bufio.NewReader(upstreamConn)
+	resp, err := http.ReadResponse(upReader, nil)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		p.log.Error().Err(err).Str("host", host).Msg("MITM bypass: upstream CONNECT failed")
+		fmt.Fprintf(clientConn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		return
+	}
+
+	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		return
+	}
+
+	p.log.Info().Str("host", host).Msg("MITM bypass: tunneling raw TLS (no inspection)")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.Copy(upstreamConn, clientConn)
+	}()
+	go func() {
+		defer wg.Done()
+		// upReader, not upstreamConn: http.ReadResponse may have buffered
+		// bytes past the CONNECT response line that a raw read would miss.
+		io.Copy(clientConn, upReader)
+	}()
+	wg.Wait()
 }
 
 func (p *MITMProxy) handleHTTPRequest(clientConn net.Conn, reader *bufio.Reader, req *http.Request) {

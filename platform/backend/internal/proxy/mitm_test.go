@@ -39,3 +39,24 @@ func TestIsOAuthTokenEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestShouldBypassMITM(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"auth.openai.com:443", true},
+		{"auth.openai.com", true},
+		// Model/code traffic must still be inspected.
+		{"api.openai.com:443", false},
+		{"chatgpt.com:443", false},
+		{"api.anthropic.com:443", false},
+		{"evil.com:443", false},
+	}
+
+	for _, tt := range tests {
+		if got := shouldBypassMITM(tt.host); got != tt.want {
+			t.Errorf("shouldBypassMITM(%q) = %v, want %v", tt.host, got, tt.want)
+		}
+	}
+}
