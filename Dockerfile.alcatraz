@@ -72,8 +72,15 @@ USER alcatraz_runner
 # Alcatraz's own plumbing. Deliberately placed ABOVE the language runtime layer:
 # it is part of the product, not part of your dev environment, and it must
 # survive any change you make below.
-COPY --from=helper-builder --chown=alcatraz_runner:alcatraz_runner \
-    /out/alcatraz-helper /home/alcatraz_runner/.local/bin/alcatraz-helper
+#
+# It lands in /usr/local/bin, NOT in ~/.local/bin: the home directory is a
+# persisted named volume (alcatraz-home) at run time, and Docker only seeds a
+# named volume from the image while the volume is still empty. Anything the
+# image installs under $HOME is invisible to users whose volume predates it —
+# their hooks would keep failing with "alcatraz-helper: not found" no matter how
+# often they rebuild. /usr/local/bin is on PATH and root-owned, so the sandbox
+# user cannot tamper with the binary either.
+COPY --from=helper-builder /out/alcatraz-helper /usr/local/bin/alcatraz-helper
 
 # ==========================================================================
 # LANGUAGE RUNTIME LAYER — your development environment. Swap it to target
