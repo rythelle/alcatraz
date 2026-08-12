@@ -131,6 +131,8 @@ type App struct {
 	OutputTitle       string
 	OutputText        string
 	OutputCmd         *exec.Cmd
+	OutputScroll      int            // index of the first visible display row
+	OutputFollow      bool           // window pinned to the tail (until the user scrolls up)
 	StreamCh          chan tea.Msg   // live output of a streaming command
 	LogsActive        bool           // true when output screen is showing logs
 	LogsService       string         // docker compose service key being viewed
@@ -851,6 +853,8 @@ func (a *App) runStreaming(cmd *exec.Cmd, title string, onFinish func(error) tea
 	a.OutputCmd = cmd
 	a.OutputTitle = title
 	a.OutputText = ""
+	a.OutputScroll = 0
+	a.OutputFollow = true
 	a.LogsActive = false
 	a.Screen = ScreenOutput
 	a.Loading = true
@@ -914,6 +918,8 @@ func (a *App) nextStreamMsg() tea.Cmd {
 func (a *App) doSnapshot(title string, cmd *exec.Cmd) tea.Cmd {
 	a.OutputTitle = title
 	a.OutputText = ""
+	a.OutputScroll = 0
+	a.OutputFollow = true
 	a.LogsActive = false
 	a.Screen = ScreenOutput
 	a.Loading = true

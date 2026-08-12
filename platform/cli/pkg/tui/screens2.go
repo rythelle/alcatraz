@@ -284,6 +284,8 @@ func (a *App) viewLogs() string {
 func (a *App) fetchLogs(dockerSvc, displayName string) tea.Cmd {
 	a.OutputTitle = fmt.Sprintf("📋  Logs: %s", displayName)
 	a.OutputText = ""
+	a.OutputScroll = 0
+	a.OutputFollow = true
 	a.Loading = true
 	a.LoadingText = fmt.Sprintf("Fetching logs for %s...", displayName)
 	a.Screen = ScreenOutput
@@ -399,9 +401,119 @@ func (a *App) doClean() tea.Cmd {
 }
 
 // ── Output ──
+//
+// The output screen shows command snapshots (stats, logs) and live streams
+// (builds, docker up), all routinely taller than the window. It used to render
+// only the tail, so anything above it — the head of the stats table, the first
+// error of a build — was simply gone. It is a scrollable window now.
+//
+// Scrolling counts DISPLAY rows, not source lines: a stats row is wider than a
+// narrow terminal and the panel wraps it, so one line can cost several rows.
+// Measuring the wrapped text is what keeps the view inside the window.
+
+// outputChrome is everything the screen draws besides the log rows: the app
+// header and footer, a leading blank, the padded title (3), a blank, the
+// panel's own padding (2), both "more" markers, a blank and the screen footer.
+// Reserving the markers even when they aren't shown keeps the view inside the
+// window at every scroll position.
+const outputChrome = 13
+
+// loadingChrome is the extra height of the spinner block, drawn above the log
+// panel while a streaming command is still running.
+const loadingChrome = 2
+
+// outputRows returns how many display rows of output fit on screen. Height is 0
+// until the first WindowSizeMsg, so fall back to a conservative window; one row
+// is the floor so the panel never vanishes on a tiny terminal.
+func (a *App) outputRows() int {
+	if a.Height <= 0 {
+		return 10
+	}
+	n := a.Height - outputChrome
+	if a.Loading {
+		n -= loadingChrome
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// outputWidth is the total width of the log panel, including its padding.
+func (a *App) outputWidth() int {
+	if a.Width <= 0 {
+		return 76
+	}
+	w := a.Width - 4
+	if w < 24 {
+		w = 24
+	}
+	if w > 160 {
+		w = 160
+	}
+	return w
+}
+
+// outputDisplayLines wraps the output to the panel's inner width, so the rows
+// counted here are exactly the rows lipgloss will draw.
+func (a *App) outputDisplayLines() []string {
+	if a.OutputText == "" {
+		return nil
+	}
+	wrapped := lipgloss.NewStyle().Width(a.outputWidth() - 4).Render(a.OutputText)
+	return strings.Split(wrapped, "\n")
+}
+
+// clampOutputScroll keeps the window inside the output. While following, it
+// stays glued to the tail so live streams keep scrolling on their own.
+func (a *App) clampOutputScroll() {
+	rows := a.outputRows()
+	total := len(a.outputDisplayLines())
+	if a.OutputFollow {
+		a.OutputScroll = total - rows
+	}
+	if max := total - rows; a.OutputScroll > max {
+		a.OutputScroll = max
+	}
+	if a.OutputScroll < 0 {
+		a.OutputScroll = 0
+	}
+}
+
+// scrollOutput moves the window by delta rows and takes it out of follow mode,
+// re-enabling follow only when the user lands back on the tail.
+func (a *App) scrollOutput(delta int) {
+	a.clampOutputScroll() // resolve the current position before moving from it
+	a.OutputFollow = false
+	a.OutputScroll += delta
+	a.clampOutputScroll()
+	if a.OutputScroll >= len(a.outputDisplayLines())-a.outputRows() {
+		a.OutputFollow = true
+	}
+}
 
 func (a *App) handleOutputKeys(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
+	case "up", "k":
+		a.scrollOutput(-1)
+		return true, nil
+	case "down", "j":
+		a.scrollOutput(1)
+		return true, nil
+	case "pgup":
+		a.scrollOutput(-a.outputRows())
+		return true, nil
+	case "pgdown":
+		a.scrollOutput(a.outputRows())
+		return true, nil
+	case "home", "g":
+		a.OutputFollow = false
+		a.OutputScroll = 0
+		return true, nil
+	case "end", "G":
+		a.OutputFollow = true
+		a.clampOutputScroll()
+		return true, nil
 	case "esc":
 		a.Loading = false
 		if a.LogsActive {
@@ -433,20 +545,27 @@ func (a *App) viewOutput() string {
 	}
 
 	if a.OutputText != "" {
-		lines := strings.Split(a.OutputText, "\n")
-		maxLines := a.Height - 12
-		if len(lines) > maxLines && maxLines > 0 {
-			lines = lines[len(lines)-maxLines:]
-			content += a.Styles.Hint.Render("  ... (output truncated) ...\n")
+		lines := a.outputDisplayLines()
+		a.clampOutputScroll()
+		start := a.OutputScroll
+		end := start + a.outputRows()
+		if end > len(lines) {
+			end = len(lines)
 		}
-		content += a.Styles.LogOutput.Render(strings.Join(lines, "\n"))
+		if start > 0 {
+			content += a.Styles.Hint.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n"
+		}
+		content += a.Styles.LogOutput.Width(a.outputWidth()).Render(strings.Join(lines[start:end], "\n"))
+		if end < len(lines) {
+			content += "\n" + a.Styles.Hint.Render(fmt.Sprintf("  ↓ %d more below", len(lines)-end))
+		}
 	}
 
 	var footerText string
 	if a.LogsActive {
-		footerText = "  ESC back to logs  •  r refresh"
+		footerText = "  ↑/↓ scroll • pgup/pgdn page • g/G top/bottom • ESC back to logs • r refresh"
 	} else {
-		footerText = "  ESC back to menu"
+		footerText = "  ↑/↓ scroll • pgup/pgdn page • g/G top/bottom • ESC back to menu"
 	}
 	footer := a.Styles.Hint.Render(footerText)
 
