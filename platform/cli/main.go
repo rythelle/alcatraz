@@ -275,6 +275,11 @@ func runCmd() *cobra.Command {
 
 			if compose.IsRunning("alcatraz") && !rebuild {
 				if prevWorkspace == absPath {
+					// Nothing to restart, but still re-link: this is the path a
+					// user hits after adding a skill to the host.
+					link := compose.CodexSkillsInit()
+					link.Stdout = os.Stdout
+					_ = link.Run()
 					fmt.Println("✓ Alcatraz is already running with this project")
 					fmt.Printf("  Project: %s -> /workspace\n", absPath)
 					return nil
@@ -296,6 +301,12 @@ func runCmd() *cobra.Command {
 			if err := dcCmd.Run(); err != nil {
 				return err
 			}
+
+			// `up` leaves an unchanged container running, so a rebuild alone
+			// would keep whatever skill set existed at the last boot.
+			link := compose.CodexSkillsInit()
+			link.Stdout = os.Stdout
+			_ = link.Run()
 
 			fmt.Println("✓ Alcatraz is running")
 			fmt.Printf("  Project: %s -> /workspace\n", absPath)

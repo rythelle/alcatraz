@@ -462,6 +462,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return CmdDoneMsg{Err: fmt.Errorf("failed to start containers: %v", err)}
 			}
+			_ = a.Compose.CodexSkillsInit().Run()
 			return msg.OnSuccess
 		})
 
@@ -691,7 +692,10 @@ func (a *App) doRunStart(absPath string, restart bool) tea.Cmd {
 
 		running := a.Compose.IsRunning("alcatraz")
 		if running && !restart {
-			// Already up and this project is mounted — nothing to restart.
+			// Already up and this project is mounted — nothing to restart, but
+			// still re-link: this is the path a user hits after adding a skill
+			// to the host.
+			_ = a.Compose.CodexSkillsInit().Run()
 			return CmdDoneMsg{Err: nil}
 		}
 		if restart {
@@ -882,7 +886,7 @@ func (a *App) runStreaming(cmd *exec.Cmd, title string, onFinish func(error) tea
 }
 
 // runCmdStreaming runs a command with live output and reports success/failure
-// on the output screen, leaving the full log visible (used by Rebuild & Run).
+// on the output screen, leaving the full log visible (used by Spawn).
 func (a *App) runCmdStreaming(cmd *exec.Cmd, title string) tea.Cmd {
 	return a.runStreaming(cmd, title, func(err error) tea.Msg {
 		return CmdFinishedMsg{Err: err}
@@ -944,7 +948,15 @@ func (a *App) doRebuild() tea.Cmd {
 	}
 	docker.EnsureContextDir(a.ProjectRoot)
 	_ = a.Compose.GenerateOverride(ws, config.LoadProjectPaths(a.ProjectRoot))
-	return a.runCmdStreaming(a.Compose.Up(false, true), "🔄  Rebuilding image and restarting...")
+	// Not runCmdStreaming: the host's Codex skills are re-linked once the stack
+	// is up, because `up` leaves an unchanged container running and the
+	// container-side init only runs at boot.
+	return a.runStreaming(a.Compose.Up(false, true), "🔄  Rebuilding image and restarting...", func(err error) tea.Msg {
+		if err == nil {
+			_ = a.Compose.CodexSkillsInit().Run()
+		}
+		return CmdFinishedMsg{Err: err}
+	})
 }
 
 func (a *App) doTestGuard() tea.Cmd {

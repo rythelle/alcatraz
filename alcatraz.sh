@@ -711,6 +711,12 @@ do_run() {
         $DC $(dc_flags) up -d --no-build
     fi
 
+    # Re-link the host's Codex skills. The container-side init only runs at
+    # boot, and `up` leaves an unchanged container running - so a rebuild alone
+    # would keep whatever skill set existed at the last boot.
+    # shellcheck disable=SC2046
+    $DC $(dc_flags) exec -T alcatraz codex-skills-init 2>/dev/null || true
+
     # Wait for the Guard (MITM proxy) to become healthy before
     # returning, so no command runs before the proxy is up.
     log_info "Waiting for the Guard (MITM proxy) to be ready..."

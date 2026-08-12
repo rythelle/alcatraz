@@ -186,6 +186,15 @@ func (c *Compose) PauseAll() *exec.Cmd {
 	return c.Exec("alcatraz", "mega-brain pause-all 'auto: container restart'")
 }
 
+// CodexSkillsInit re-links the host's Codex skills into ~/.codex/skills. The
+// container-side init only runs at boot, and `up` leaves an unchanged container
+// running — so a skill added on the host since the last boot would stay
+// invisible until something forced a recreate. Best-effort: callers ignore
+// errors (the script itself exits 0 when the host mount is absent).
+func (c *Compose) CodexSkillsInit() *exec.Cmd {
+	return c.ExecRaw("alcatraz", "codex-skills-init")
+}
+
 func (c *Compose) exec(args ...string) *exec.Cmd {
 	parts := strings.Fields(c.DC)
 	cmd := exec.Command(parts[0], append(parts[1:], args...)...)
