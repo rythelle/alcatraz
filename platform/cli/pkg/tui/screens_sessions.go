@@ -20,8 +20,9 @@ import (
 // They live in named volumes, so they survive stop/run cycles (only `clean`
 // wipes them). This screen lists the actual sessions — one row each, newest
 // first, only for tools that have any — and resumes the highlighted one in a
-// shell. Claude sessions are listed individually (per project); the other CLIs
-// expose only "continue latest / native picker", so they show a single row.
+// shell. Claude and Codex sessions are listed individually (per project,
+// resumed by id); Gemini and opencode expose only "continue latest / native
+// picker", so they show a single row.
 
 // SessionItem is one resumable session parsed from `alcatraz.sh sessions-data`.
 type SessionItem struct {
@@ -210,10 +211,15 @@ func (a *App) viewSessions() string {
 				when = time.Unix(it.Epoch, 0).Format("2006-01-02 15:04")
 			}
 			id := clip(it.ID, 8)
-			line := fmt.Sprintf("%-9s  %-26s  %-16s  %s", it.Tool, clip(it.Label, 26), when, a.Styles.Hint.Render(id))
+			cells := "%-9s  %-26s  %-16s  %s"
 			if start+i == a.SessionCursor {
+				// The highlighted row is re-styled character by character, which
+				// chops up any nested escape sequence and prints it as literal
+				// text. Keep the selected line unstyled inside.
+				line := fmt.Sprintf(cells, it.Tool, clip(it.Label, 26), when, id)
 				rows = append(rows, "  "+a.Styles.Key.Render("▶ ")+a.Styles.PanelTitle.Render(line))
 			} else {
+				line := fmt.Sprintf(cells, it.Tool, clip(it.Label, 26), when, a.Styles.Hint.Render(id))
 				rows = append(rows, "     "+line)
 			}
 		}

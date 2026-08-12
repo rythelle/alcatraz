@@ -612,17 +612,17 @@ there's no wall of empty rows. Each line is a resumable session:
    TOOL       PROJECT / TAG               LAST USED         ID
 ▶  Claude     retro-job-hub               2026-07-05 02:33  a1b2c3d4
    Claude     resume-adapter              2026-07-04 18:12  9f8e7d6c
-   Codex      2 sessions (native picker)  2026-07-04 02:33
+   Codex      retro-job-hub               2026-07-04 02:33  019fca34
    opencode   1 session (latest)          2026-07-03 21:40
 
   ↑/↓ select • enter resume • s shell • r refresh • ESC back
 ```
 
 Highlight one and press **enter**. Alcatraz opens a shell that resumes it and stays
-interactive. Claude sessions are listed **individually**: each row carries its real project
-directory and id, read from the session file, so enter runs `claude --resume <id>` in the
-right project. Codex, Gemini and opencode get one row each, which hands off to their native
-picker or continues the latest.
+interactive. Claude and Codex sessions are listed **individually**: each row carries its
+real project directory and id, read from the session file, so enter runs
+`claude --resume <id>` / `codex resume <id>` in the right project. Gemini and opencode get
+one row each, which hands off to their native picker or continues the latest.
 
 **Choosing *which* session from the CLI:**
 

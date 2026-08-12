@@ -2,10 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestParseSessionsTSV(t *testing.T) {
@@ -236,6 +239,31 @@ func TestSessionsEmptyList(t *testing.T) {
 	}
 	if view := a.viewSessions(); !strings.Contains(view, "No resumable sessions yet") {
 		t.Error("empty state not rendered")
+	}
+}
+
+// Regression: the highlighted row is re-styled character by character, so the
+// dimmed ID cell nested inside it had its own escape sequence chopped up and
+// printed as literal text — "[3;38;5;60m[0m" sat in the ID column of whichever
+// row the cursor was on. The selected row must not nest a style inside itself.
+func TestSelectedSessionRowHasNoLeakedEscapes(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	ansiSeq := regexp.MustCompile("\x1b\\[[0-9;]*m")
+	for _, id := range []string{"", "4e082cf1-aaaa-bbbb"} {
+		a := &App{Height: 24, Width: 120, Styles: DefaultStyles()}
+		a.SessionItems = []SessionItem{{Tool: "opencode", ID: id, Label: "sandbox", Epoch: 1786484867}}
+
+		for _, line := range strings.Split(a.viewSessions(), "\n") {
+			if !strings.Contains(ansiSeq.ReplaceAllString(line, ""), "opencode") {
+				continue
+			}
+			visible := ansiSeq.ReplaceAllString(line, "")
+			if strings.Contains(visible, "38;5") || strings.Contains(visible, "[0m") {
+				t.Errorf("id=%q: escape sequence leaked into the visible row: %q", id, visible)
+			}
+		}
 	}
 }
 

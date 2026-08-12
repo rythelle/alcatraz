@@ -926,12 +926,20 @@ for d in "$HOME/.claude/projects"/*/; do
             "$id" "$cwd" "$epoch" "$label" "$cwd" "$id"
     done
 done
-# Codex: flat rollout files; resume via its native picker.
-n=$(find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' 2>/dev/null | wc -l)
-if [ "$n" -gt 0 ]; then
-    last=$(find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
-    printf 'Codex\t\t\t%s\t%s session(s) — native picker\tcodex resume\n' "${last:-0}" "$n"
-fi
+# Codex: one rollout-*.jsonl per session, in date-nested dirs. Its first line is
+# a session_meta record carrying the session id and the cwd — list each session
+# individually (like Claude) and resume it by id, instead of handing the user
+# back to Codex's own picker.
+find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -printf '%T@\t%p\n' 2>/dev/null |
+while IFS=$'\t' read -r ep f; do
+    meta=$(head -1 "$f" 2>/dev/null)
+    id=$(printf '%s' "$meta" | grep -m1 -o '"session_id":"[^"]*"' | sed 's/"session_id":"//; s/"$//')
+    [ -z "$id" ] && continue
+    cwd=$(printf '%s' "$meta" | grep -m1 -o '"cwd":"[^"]*"' | sed 's/"cwd":"//; s/"$//')
+    [ -z "$cwd" ] && cwd="/workspace"
+    printf 'Codex\t%s\t%s\t%s\t%s\tcd %q 2>/dev/null; codex resume %s\n' \
+        "$id" "$cwd" "${ep%.*}" "$(basename "$cwd")" "$cwd" "$id"
+done
 # Gemini: saved chat tags.
 if [ -d "$HOME/.gemini/tmp" ]; then
     find "$HOME/.gemini/tmp" -name 'checkpoint-*.json' -printf '%T@\t%f\n' 2>/dev/null | while IFS=$'\t' read -r ep fn; do

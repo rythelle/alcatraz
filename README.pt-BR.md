@@ -618,17 +618,17 @@ retomável:
    TOOL       PROJECT / TAG               LAST USED         ID
 ▶  Claude     retro-job-hub               2026-07-05 02:33  a1b2c3d4
    Claude     resume-adapter              2026-07-04 18:12  9f8e7d6c
-   Codex      2 sessions (native picker)  2026-07-04 02:33
+   Codex      retro-job-hub               2026-07-04 02:33  019fca34
    opencode   1 session (latest)          2026-07-03 21:40
 
   ↑/↓ select • enter resume • s shell • r refresh • ESC back
 ```
 
 Selecione uma e aperte **enter**. O Alcatraz abre um shell que a retoma e continua
-interativo. Sessões do Claude são listadas **individualmente**: cada linha carrega o
-diretório real do projeto e o id, lidos do arquivo da sessão, então o enter roda
-`claude --resume <id>` no projeto certo. Codex, Gemini e opencode ganham uma linha cada, que
-chama o seletor nativo deles ou continua a mais recente.
+interativo. Sessões do Claude e do Codex são listadas **individualmente**: cada linha carrega
+o diretório real do projeto e o id, lidos do arquivo da sessão, então o enter roda
+`claude --resume <id>` / `codex resume <id>` no projeto certo. Gemini e opencode ganham uma
+linha cada, que chama o seletor nativo deles ou continua a mais recente.
 
 **Escolhendo *qual* sessão pela CLI:**
 
