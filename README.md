@@ -746,6 +746,7 @@ safe command from a destructive one:
 | Mega Brain vault | host directory: `.ai-context/`, or `AI_CONTEXT_PATH` | `git pull`, rebuild, `down` |
 | `.env` | host, git-ignored | `git pull`, rebuild, `down` |
 | Agent logins (Claude, Gemini, Codex, opencode) | Docker named volumes | rebuild, `down` |
+| Shell history (`~/.bash_history` in the jail) | Docker named volume (sandbox home) | rebuild, `down` |
 | Your projects | bind-mounted from the host | everything |
 
 The vault and `.env` are in `.gitignore`, so `git pull` can't clobber them. The backup in

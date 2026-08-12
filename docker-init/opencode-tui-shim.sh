@@ -75,3 +75,21 @@ case "${PROMPT_COMMAND:-}" in
     "")  PROMPT_COMMAND="__alcatraz_mb_autoload" ;;
     *)   PROMPT_COMMAND="__alcatraz_mb_autoload; ${PROMPT_COMMAND}" ;;
 esac
+
+# ── Persistent shell history ────────────────────────────────────────────────
+# $HOME is the alcatraz-home volume, so ~/.bash_history already outlives the
+# container — but bash only writes it on a CLEAN exit. A shell killed by
+# `alcatraz stop`, a closed terminal or a restart lost everything typed in it,
+# which is why history looked like it wasn't kept at all. So: flush after every
+# command (`history -a`), append instead of overwrite, and keep a window long
+# enough to be worth searching. Only `alcatraz clean` (down -v) wipes it.
+HISTFILE="$HOME/.bash_history"
+HISTSIZE=50000
+HISTFILESIZE=100000
+HISTTIMEFORMAT='%F %T  '
+shopt -s histappend
+case "${PROMPT_COMMAND:-}" in
+    *"history -a"*) : ;;
+    "")  PROMPT_COMMAND="history -a" ;;
+    *)   PROMPT_COMMAND="history -a; ${PROMPT_COMMAND}" ;;
+esac

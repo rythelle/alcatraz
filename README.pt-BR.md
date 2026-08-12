@@ -752,6 +752,7 @@ um comando seguro de um destrutivo:
 | Vault do Mega Brain | diretório no host: `.ai-context/`, ou `AI_CONTEXT_PATH` | `git pull`, rebuild, `down` |
 | `.env` | host, ignorado pelo git | `git pull`, rebuild, `down` |
 | Logins dos agentes (Claude, Gemini, Codex, opencode) | volumes nomeados do Docker | rebuild, `down` |
+| Histórico do shell (`~/.bash_history` na jail) | volume nomeado do Docker (home da sandbox) | rebuild, `down` |
 | Seus projetos | bind-mount do host | tudo |
 
 O vault e o `.env` estão no `.gitignore`, então o `git pull` não tem como sobrescrevê-los. O
